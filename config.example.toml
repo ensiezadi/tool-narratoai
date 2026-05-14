@@ -30,6 +30,7 @@
     text_llm_provider = "openai"
 
     # 常用文本模型示例：
+    #   - MiniMax: minimax-cn-coding-plan/MiniMax-M2.7 (推荐，coding plan)
     #   - DeepSeek: deepseek/deepseek-chat (推荐，性价比高)
     #   - DeepSeek: deepseek/deepseek-reasoner (推理能力强)
     #   - Gemini: gemini/gemini-2.0-flash (速度快)
@@ -37,9 +38,9 @@
     #   - Qwen: qwen/qwen-plus, qwen/qwen-turbo
     #   - SiliconFlow: siliconflow/deepseek-ai/DeepSeek-R1
     #   - Moonshot: moonshot/moonshot-v1-8k
-    text_openai_model_name = "Pro/zai-org/GLM-5"
+    text_openai_model_name = "minimax-cn-coding-plan/MiniMax-M2.7"
     text_openai_api_key = ""  # 填入对应 provider 的 API key
-    text_openai_base_url = "https://api.siliconflow.cn/v1"  # 可选：自定义 API base URL（官方 OpenAI 可留空）
+    text_openai_base_url = "https://api.minimaxi.com/v1"  # MiniMax API 地址
 
     # ===== API Keys 参考 =====
     # 主流 LLM Providers API Key 获取地址：
@@ -50,6 +51,7 @@
     # Qwen (阿里):  https://bailian.console.aliyun.com/?tab=model#/api-key
     # SiliconFlow:  https://cloud.siliconflow.cn/account/ak (手机号注册)
     # Moonshot:     https://platform.moonshot.cn/console/api-keys
+    # MiniMax:      https://platform.minimaxi.com/
     # Anthropic:    https://console.anthropic.com/settings/keys
     # Cohere:       https://dashboard.cohere.com/api-keys
     # Together AI:  https://api.together.xyz/settings/api-keys
