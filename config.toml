@@ -1,0 +1,86 @@
+[app]
+project_version = "0.7.8"
+llm_vision_timeout = 120
+llm_text_timeout = 180
+llm_max_retries = 3
+vision_llm_provider = "openai"
+vision_openai_model_name = "Qwen/Qwen3.5-122B-A10B"
+vision_openai_api_key = "sk-iuthlhudybcxmwvzrjaindklxxqnqrlkpknalqigkmxlmgbp"
+vision_openai_base_url = "https://api.siliconflow.cn/v1"
+text_llm_provider = "openai"
+text_openai_model_name = "Pro/zai-org/GLM-5"
+text_openai_api_key = ""
+text_openai_base_url = "https://api.siliconflow.cn/v1"
+hide_config = true
+
+[azure]
+speech_key = ""
+speech_region = ""
+
+[tencent]
+secret_id = ""
+secret_key = ""
+region = "ap-beijing"
+
+[soulvoice]
+api_key = ""
+voice_uri = "speech:mcg3fdnx:clzkyf4vy00e5qr6hywum4u84:bzznlkuhcjzpbosexitr"
+api_url = "https://tts.scsmtech.cn/tts"
+model = "FunAudioLLM/CosyVoice2-0.5B"
+
+[tts_qwen]
+api_key = ""
+model_name = "qwen3-tts-flash"
+
+[fun_asr]
+api_key = ""
+model = "fun-asr"
+
+[indextts2]
+api_url = "http://127.0.0.1:8081/tts"
+infer_mode = "普通推理"
+temperature = 1.0
+top_p = 0.8
+top_k = 30
+do_sample = true
+num_beams = 3
+repetition_penalty = 10.0
+
+[doubaotts]
+ak = ""
+sk = ""
+appid = ""
+token = ""
+cluster = "volcano_tts"
+volume = 1.0
+pitch = 1.0
+silence_duration = 0.125
+
+[ui]
+tts_engine = "edge_tts"
+edge_voice_name = "zh-CN-XiaoyiNeural-Female"
+edge_volume = 80
+edge_rate = 1.0
+edge_pitch = 0
+azure_voice_name = "zh-CN-XiaoyiNeural-Female"
+azure_volume = 80
+azure_rate = 1.0
+azure_pitch = 0
+doubaotts_voice_type = "BV700_V2_streaming"
+doubaotts_rate = 1.0
+language = "zh"
+jianying_draft_path = ""
+voice_name = "zh-CN-XiaoyiNeural-Female"
+font_name = "SourceHanSansCN-Regular.otf"
+text_fore_color = "#FFFFFF"
+font_size = 60
+
+[proxy]
+http = ""
+https = ""
+enabled = false
+
+[frames]
+frame_interval_input = 3
+vision_batch_size = 10
+vision_max_concurrency = 2
