@@ -975,6 +975,13 @@ def render_xiaomi_tts_settings(tr):
         help="小米语音平台 API Key"
     )
 
+    # 试听文本
+    play_content = st.text_area(
+        "试听文本",
+        value="感谢关注 NarratoAI，有任何问题或建议可以联系我们。",
+        height=80
+    )
+
     # 模型选择
     model = st.selectbox(
         "模型",
@@ -1005,37 +1012,27 @@ def render_xiaomi_tts_settings(tr):
         list(voice_options.values()).index(selected_voice_display)
     ]
 
-    # Base URL
-    base_url = st.text_input(
-        "Base URL",
-        value=config.xiaomi.get("base_url", "https://api.xiaomimimo.com/v1"),
-        help="小米语音 API 地址"
-    )
-
-    # 语速设置
-    voice_rate = st.slider(
-        "语速调节",
-        min_value=0.5,
-        max_value=2.0,
-        value=config.ui.get("xiaomi_rate", 1.0),
-        step=0.1,
-        help="调节语音速度 (0.5-2.0)"
-    )
-
-    st.markdown("""
-    ### 获取 API Key
-    1. 访问 [小米语音平台](https://platform.xiaomimimo.com/)
-    2. 注册并登录账号
-    3. 在控制台创建应用获取 API Key
-    """)
-
     # 保存配置
     config.xiaomi["api_key"] = api_key
     config.xiaomi["model"] = model
     config.xiaomi["voice"] = voice
-    config.xiaomi["base_url"] = base_url
-    config.ui["xiaomi_rate"] = voice_rate
     config.ui["voice_name"] = voice
+
+    # 试听按钮
+    if st.button("🎵 试听", use_container_width=True) and play_content:
+        with st.spinner("合成中..."):
+            import uuid
+            from app.services import voice as voice_service
+            temp_dir = utils.storage_dir("temp", create=True)
+            audio_file = os.path.join(temp_dir, f"xiaomi-tts-{uuid4()}.wav")
+            sub_maker = voice_service.xiaomi_tts(play_content, voice, audio_file, 1.0)
+            if sub_maker and os.path.exists(audio_file):
+                st.success("合成成功！")
+                with open(audio_file, 'rb') as f:
+                    st.audio(f.read(), format='audio/wav')
+                os.remove(audio_file)
+            else:
+                st.error("合成失败，请检查日志")
 
     # 显示配置状态
     if api_key:

@@ -2332,19 +2332,27 @@ def xiaomi_tts(text: str, voice_name: str, voice_file: str, speed: float = 1.0) 
 
             message = completion.choices[0].message
             audio_data = getattr(message, "audio", None)
-            if audio_data and isinstance(audio_data, dict):
-                audio_bytes = base64.b64decode(audio_data["data"])
-                with open(voice_file, "wb") as f:
-                    f.write(audio_bytes)
 
-                logger.success(f"小米 MiMo TTS 合成成功: {voice_file}")
+            if audio_data:
+                if isinstance(audio_data, bytes):
+                    audio_bytes = audio_data
+                elif isinstance(audio_data, dict) and "data" in audio_data:
+                    audio_bytes = base64.b64decode(audio_data["data"])
+                else:
+                    audio_bytes = getattr(audio_data, "data", None)
+                    if audio_bytes and isinstance(audio_bytes, str):
+                        audio_bytes = base64.b64decode(audio_bytes)
 
-                sub_maker = new_sub_maker()
-                estimated_duration_ms = max(1000, int(len(text) * 200))
-                add_subtitle_event(sub_maker, 0, estimated_duration_ms * 10000, text)
-                return sub_maker
-            else:
-                logger.error("小米 MiMo TTS 响应中无音频数据")
+                if audio_bytes:
+                    with open(voice_file, "wb") as f:
+                        f.write(audio_bytes)
+                    logger.success(f"小米 MiMo TTS 合成成功: {voice_file}")
+                    sub_maker = new_sub_maker()
+                    estimated_duration_ms = max(1000, int(len(text) * 200))
+                    add_subtitle_event(sub_maker, 0, estimated_duration_ms * 10000, text)
+                    return sub_maker
+
+            logger.error(f"小米 MiMo TTS 响应格式错误或无音频数据")
 
         except Exception as e:
             logger.error(f"小米 MiMo TTS 错误: {str(e)}")
