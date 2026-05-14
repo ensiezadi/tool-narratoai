@@ -1271,6 +1271,10 @@ def tts(
         logger.info("分发到豆包语音 TTS")
         return doubaotts_tts(text, voice_name, voice_file, speed=voice_rate)
 
+    if tts_engine == "xiaomi_tts":
+        logger.info("分发到小米 MiMo TTS")
+        return xiaomi_tts(text, voice_name, voice_file, speed=voice_rate)
+
     # Fallback for unknown engine - default to azure v1
     logger.warning(f"未知的 TTS 引擎: '{tts_engine}', 将默认使用 Edge TTS (Azure V1)。")
     return azure_tts_v1(text, voice_name, voice_rate, voice_pitch, voice_file)
@@ -2268,4 +2272,84 @@ def indextts2_tts(text: str, voice_name: str, voice_file: str, speed: float = 1.
                     pass
 
     logger.error("IndexTTS2 TTS 生成失败，已达到最大重试次数")
+    return None
+
+
+def xiaomi_tts(text: str, voice_name: str, voice_file: str, speed: float = 1.0) -> Union[SubMaker, None]:
+    """
+    使用小米 MiMo TTS 生成语音
+    API文档: https://platform.xiaomimimo.com/docs/zh-CN/news/v2.5-tts-release
+    """
+    xiaomi_cfg = getattr(config, "xiaomi", {}) or {}
+    api_key = xiaomi_cfg.get("api_key", "")
+    model = xiaomi_cfg.get("model", "mimo-v2.5-tts")
+    voice = voice_name if voice_name else xiaomi_cfg.get("voice", "冰糖")
+    base_url = xiaomi_cfg.get("base_url", "https://api.xiaomimimo.com/v1")
+
+    if not api_key:
+        logger.error("小米 MiMo TTS 配置未完成：api_key 为空")
+        return None
+
+    text = text.strip()
+    if not text:
+        logger.error("小米 MiMo TTS 文本为空")
+        return None
+
+    import base64
+
+    for attempt in range(3):
+        try:
+            logger.info(f"第 {attempt + 1} 次调用小米 MiMo TTS API")
+
+            proxies = None
+            proxy_enabled = config.proxy.get("enabled", False)
+            if proxy_enabled:
+                proxy_url = config.proxy.get("https", config.proxy.get("http", ""))
+                if proxy_url:
+                    proxies = {"https": proxy_url, "http": proxy_url}
+
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key, base_url=base_url)
+
+            completion = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "用轻快明朗的语调朗读。"
+                    },
+                    {
+                        "role": "assistant",
+                        "content": text
+                    }
+                ],
+                audio={
+                    "format": "wav",
+                    "voice": voice
+                },
+                timeout=60
+            )
+
+            message = completion.choices[0].message
+            audio_data = getattr(message, "audio", None)
+            if audio_data and isinstance(audio_data, dict):
+                audio_bytes = base64.b64decode(audio_data["data"])
+                with open(voice_file, "wb") as f:
+                    f.write(audio_bytes)
+
+                logger.success(f"小米 MiMo TTS 合成成功: {voice_file}")
+
+                sub_maker = new_sub_maker()
+                estimated_duration_ms = max(1000, int(len(text) * 200))
+                add_subtitle_event(sub_maker, 0, estimated_duration_ms * 10000, text)
+                return sub_maker
+            else:
+                logger.error("小米 MiMo TTS 响应中无音频数据")
+
+        except Exception as e:
+            logger.error(f"小米 MiMo TTS 错误: {str(e)}")
+            if attempt < 2:
+                time.sleep(2)
+
+    logger.error("小米 MiMo TTS 生成失败，已达到最大重试次数")
     return None

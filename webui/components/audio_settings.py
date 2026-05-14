@@ -27,7 +27,8 @@ def get_tts_engine_options():
         "tencent_tts": "腾讯云 TTS",
         "qwen3_tts": "通义千问 Qwen3 TTS",
         "indextts2": "IndexTTS2 语音克隆",
-        "doubaotts": "豆包语音 TTS"
+        "doubaotts": "豆包语音 TTS",
+        "xiaomi_tts": "小米 MiMo TTS"
     }
 
 
@@ -69,6 +70,12 @@ def get_tts_engine_descriptions():
             "features": "火山引擎豆包语音合成，支持多种音色和情感，国内访问速度快",
             "use_case": "需要高质量中文语音合成的用户",
             "registration": "https://www.volcengine.com/product/voice-tech"
+        },
+        "xiaomi_tts": {
+            "title": "小米 MiMo TTS",
+            "features": "小米语音合成，支持多种音色和情感风格控制，音质优秀",
+            "use_case": "需要高质量中文语音合成的用户，支持语音风格细粒度控制",
+            "registration": "https://platform.xiaomimimo.com/"
         }
     }
 
@@ -156,6 +163,8 @@ def render_tts_settings(tr):
         render_indextts2_tts_settings(tr)
     elif selected_engine == "doubaotts":
         render_doubaotts_settings(tr)
+    elif selected_engine == "xiaomi_tts":
+        render_xiaomi_tts_settings(tr)
 
     # 4. 试听功能
     render_voice_preview_new(tr, selected_engine)
@@ -956,6 +965,85 @@ def render_doubaotts_settings(tr):
             st.warning(f"⚠️ 请配置: {', '.join(missing)}")
 
 
+def render_xiaomi_tts_settings(tr):
+    """渲染小米 MiMo TTS 设置"""
+    # API Key 输入
+    api_key = st.text_input(
+        "API Key",
+        value=config.xiaomi.get("api_key", ""),
+        type="password",
+        help="小米语音平台 API Key"
+    )
+
+    # 模型选择
+    model = st.selectbox(
+        "模型",
+        options=["mimo-v2.5-tts", "mimo-v2-tts"],
+        index=0,
+        help="选择小米 TTS 模型"
+    )
+
+    # 音色选择
+    voice_options = {
+        "冰糖": "冰糖 (女声)",
+        "茉莉": "茉莉 (女声)",
+        "苏打": "苏打 (男声)",
+        "白桦": "白桦 (男声)",
+        "mimo_default": "MiMo-默认"
+    }
+    saved_voice = config.xiaomi.get("voice", "冰糖")
+    if saved_voice not in voice_options:
+        voice_options[saved_voice] = f"自定义 ({saved_voice})"
+
+    selected_voice_display = st.selectbox(
+        "音色",
+        options=list(voice_options.values()),
+        index=list(voice_options.values()).index(voice_options.get(saved_voice, "冰糖")) if saved_voice in voice_options else 0,
+        help="选择小米 TTS 音色"
+    )
+    voice = list(voice_options.keys())[
+        list(voice_options.values()).index(selected_voice_display)
+    ]
+
+    # Base URL
+    base_url = st.text_input(
+        "Base URL",
+        value=config.xiaomi.get("base_url", "https://api.xiaomimimo.com/v1"),
+        help="小米语音 API 地址"
+    )
+
+    # 语速设置
+    voice_rate = st.slider(
+        "语速调节",
+        min_value=0.5,
+        max_value=2.0,
+        value=config.ui.get("xiaomi_rate", 1.0),
+        step=0.1,
+        help="调节语音速度 (0.5-2.0)"
+    )
+
+    st.markdown("""
+    ### 获取 API Key
+    1. 访问 [小米语音平台](https://platform.xiaomimimo.com/)
+    2. 注册并登录账号
+    3. 在控制台创建应用获取 API Key
+    """)
+
+    # 保存配置
+    config.xiaomi["api_key"] = api_key
+    config.xiaomi["model"] = model
+    config.xiaomi["voice"] = voice
+    config.xiaomi["base_url"] = base_url
+    config.ui["xiaomi_rate"] = voice_rate
+    config.ui["voice_name"] = voice
+
+    # 显示配置状态
+    if api_key:
+        st.success("✅ 小米 MiMo TTS 配置已设置")
+    else:
+        st.warning("⚠️ 请配置 API Key")
+
+
 def render_voice_preview_new(tr, selected_engine):
     """渲染新的语音试听功能"""
     if st.button("🎵 试听语音合成", use_container_width=True):
@@ -1004,6 +1092,10 @@ def render_voice_preview_new(tr, selected_engine):
             voice_name = voice_type
             voice_rate = config.ui.get("doubaotts_rate", 1.0)
             voice_pitch = 1.0  # 豆包语音 TTS 不支持音调调节
+        elif selected_engine == "xiaomi_tts":
+            voice_name = config.xiaomi.get("voice", "冰糖")
+            voice_rate = config.ui.get("xiaomi_rate", 1.0)
+            voice_pitch = 1.0  # 小米 TTS 使用默认音调
 
         if not voice_name:
             st.error("请先配置语音设置")

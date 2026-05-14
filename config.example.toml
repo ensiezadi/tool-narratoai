@@ -131,11 +131,19 @@
     appid = ""
     token = ""
     cluster = "volcano_tts"
-    
+
     # 高级参数
     volume = 1.0
     pitch = 1.0
     silence_duration = 0.125
+
+[xiaomi]
+    # 小米 MiMo TTS 配置
+    # 访问 https://platform.xiaomimimo.com/ 获取 API Key
+    api_key = ""
+    model = "mimo-v2.5-tts"
+    voice = "冰糖"
+    base_url = "https://api.xiaomimimo.com/v1"
 
 [ui]
     # TTS引擎选择 (edge_tts, azure_speech, soulvoice, tencent_tts, tts_qwen, doubaotts)
