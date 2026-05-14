@@ -978,9 +978,11 @@ def render_xiaomi_tts_settings(tr):
     # 试听文本
     play_content = st.text_area(
         "试听文本",
-        value="感谢关注 NarratoAI，有任何问题或建议可以联系我们。",
-        height=80
+        value=st.session_state.get('xiaomi_preview_text', "感谢关注 NarratoAI，有任何问题或建议可以联系我们。"),
+        height=80,
+        key="xiaomi_preview_text_input"
     )
+    st.session_state['xiaomi_preview_text'] = play_content
 
     # 模型选择
     model = st.selectbox(
@@ -1045,6 +1047,10 @@ def render_voice_preview_new(tr, selected_engine):
     """渲染新的语音试听功能"""
     if st.button("🎵 试听语音合成", use_container_width=True):
         play_content = "感谢关注 NarratoAI，有任何问题或建议，可以关注微信公众号，求助或讨论"
+
+        # 小米 TTS 使用自定义试听文本
+        if selected_engine == "xiaomi_tts":
+            play_content = st.session_state.get('xiaomi_preview_text', play_content)
 
         # 根据选择的引擎获取对应的语音配置
         voice_name = ""
