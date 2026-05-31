@@ -217,7 +217,7 @@ def narrato_segment_understanding(
     segment_index: int,
     start_sec: float,
     end_sec: float,
-) -> bool:
+) -> dict:
     storyboard_info = make_segment_storyboard(video_path, start_sec, end_sec, int(segment_index))
     img = images.from_path(storyboard_info["storyboard_path"])
 
@@ -296,7 +296,7 @@ end_sec = {end_sec}
     kbench.assertions.assert_true(event_type in EVENT_TYPES, expectation="event_type 必须在允许集合内。")
     kbench.assertions.assert_true(0 <= score <= 10, expectation="score 必须在 0-10 内。")
     kbench.assertions.assert_true(0 <= confidence <= 1, expectation="confidence 必须在 0-1 内。")
-    return True
+    return record
 
 
 video_files = find_video_files()
