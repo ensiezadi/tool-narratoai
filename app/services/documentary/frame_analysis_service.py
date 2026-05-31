@@ -9,6 +9,7 @@ from loguru import logger
 
 from app.config import config
 from app.services.documentary.frame_analysis_models import FrameBatchResult
+from app.services.edit_decision import normalize_edit_script
 from app.services.generate_narration_script import generate_narration, parse_frame_analysis_to_markdown
 from app.services.llm.migration_adapter import create_vision_analyzer
 from app.utils import utils, video_processor
@@ -92,7 +93,7 @@ JSON 必须包含以下键：
         )
         narration_items = self._parse_narration_items(narration_raw)
 
-        final_script = [{**item, "OST": 2} for item in narration_items]
+        final_script = normalize_edit_script([{**item, "OST": 2} for item in narration_items])
         progress(100, "脚本生成完成")
         return final_script
 

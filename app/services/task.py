@@ -174,7 +174,9 @@ def start_subclip(task_id: str, params: VideoClipParams, subclip_path_videos: di
     # 4. 合并音频和字幕（对齐 target timeline）
     # ─────────────────────────────────────────────────────────────────────────
     logger.info("\n\n## 4. 合并音频和字幕")
-    total_duration = sum(p.target_duration for p in plans)
+    total_duration = sum(float(item.get("duration", 0.0) or 0.0) for item in new_script_list)
+    if total_duration <= 0:
+        total_duration = sum(p.target_duration for p in plans)
     merged_audio_path = ""
     merged_subtitle_path = ""
 

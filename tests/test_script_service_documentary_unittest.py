@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
 from app.services.documentary.frame_analysis_service import DocumentaryFrameAnalysisService
+from app.services.edit_decision import normalize_edit_script
 from app.services.script_service import ScriptGenerator
 
 
@@ -310,6 +311,65 @@ class DocumentaryFrameAnalysisServiceScriptGenerationTests(unittest.IsolatedAsyn
         self.assertEqual("explicit-key", called_kwargs["api_key"])
         self.assertEqual("explicit-model", called_kwargs["model"])
         self.assertEqual("", called_kwargs["base_url"])
+
+
+class EditDecisionTests(unittest.TestCase):
+    def test_normalize_edit_script_filters_low_score_candidates(self):
+        result = normalize_edit_script(
+            [
+                {
+                    "clip_id": "weak",
+                    "timestamp": "00:00:00,000-00:00:10,000",
+                    "score": 5.5,
+                    "picture": "普通走路",
+                    "narration": "",
+                    "OST": 1,
+                },
+                {
+                    "clip_id": "strong",
+                    "timestamp": "00:00:20,000-00:00:30,000",
+                    "score": 8.2,
+                    "visual_evidence": "角色坠落后失败提示出现",
+                    "picture": "角色坠落后失败提示出现",
+                    "narration": "",
+                    "OST": 1,
+                },
+            ]
+        )
+
+        self.assertEqual(1, len(result))
+        self.assertEqual("strong", result[0]["_id"])
+
+    def test_normalize_edit_script_trims_long_narrated_batch_windows(self):
+        result = normalize_edit_script(
+            [
+                {
+                    "_id": "seg_0001",
+                    "timestamp": "00:02:00,000-00:02:30,000",
+                    "picture": "角色进入遗迹并触发爆炸",
+                    "narration": "爆炸就在这一刻突然发生。",
+                    "OST": 2,
+                }
+            ]
+        )
+
+        self.assertEqual("00:02:00,000-00:02:14,000", result[0]["timestamp"])
+        self.assertIn("trimmed_from_30.0s_to_14.0s", result[0]["edit_warnings"])
+
+    def test_normalize_edit_script_downgrades_empty_narration_to_original_audio(self):
+        result = normalize_edit_script(
+            [
+                {
+                    "_id": "clip_0001",
+                    "timestamp": "00:03:00,000-00:03:08,000",
+                    "picture": "主播爆笑反应",
+                    "narration": "",
+                    "OST": 2,
+                }
+            ]
+        )
+
+        self.assertEqual(1, result[0]["OST"])
 
 
 if __name__ == "__main__":
