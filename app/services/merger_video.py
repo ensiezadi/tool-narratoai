@@ -16,6 +16,7 @@ from typing import List, Optional, Tuple
 from loguru import logger
 
 from app.utils import ffmpeg_utils
+from app.services.clip_video import validate_video_file
 
 
 class VideoAspect(Enum):
@@ -387,6 +388,9 @@ def combine_clip_videos(
     for i, (video_path, video_ost) in enumerate(zip(video_paths, video_ost_list)):
         if not os.path.exists(video_path):
             logger.warning(f"视频不存在，跳过: {video_path}")
+            continue
+        if not validate_video_file(video_path):
+            logger.warning(f"视频文件无效或已损坏，跳过: {video_path}")
             continue
 
         # 检查是否有音频流

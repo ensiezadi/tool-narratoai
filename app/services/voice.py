@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import ssl
 import traceback
 import edge_tts
 import asyncio
@@ -1273,7 +1274,19 @@ def tts(
 
     if tts_engine == "xiaomi_tts":
         logger.info("分发到小米 MiMo TTS")
+        xiaomi_cfg = getattr(config, "xiaomi", {}) or {}
+        model = xiaomi_cfg.get("model", "mimo-v2.5-tts")
+        reference_audio = xiaomi_cfg.get("reference_audio", "")
+        logger.info(f"小米配置: model={model}, reference_audio={reference_audio}")
+        if model == "mimo-v2.5-tts-voiceclone" and reference_audio:
+            logger.info("使用音色克隆模式")
+            return xiaomi_tts_with_clone(text, reference_audio, voice_file, speed=voice_rate)
+        logger.info("使用预置音色模式")
         return xiaomi_tts(text, voice_name, voice_file, speed=voice_rate)
+
+    if tts_engine == "minimax_tts":
+        logger.info("分发到 MiniMax TTS")
+        return minimax_tts(text, voice_name, voice_file, speed=voice_rate)
 
     # Fallback for unknown engine - default to azure v1
     logger.warning(f"未知的 TTS 引擎: '{tts_engine}', 将默认使用 Edge TTS (Azure V1)。")
@@ -1733,8 +1746,8 @@ def tts_multiple(task_id: str, list_script: list, voice_name: str, voice_rate: f
                              f"或者使用其他 tts 引擎")
                 continue
             else:
-                # SoulVoice、Qwen3、IndexTTS2、豆包语音 引擎不生成字幕文件
-                if is_soulvoice_voice(voice_name) or is_qwen_engine(tts_engine) or tts_engine == "indextts2" or tts_engine == "doubaotts":
+                # SoulVoice、Qwen3、IndexTTS2、豆包语音、MiniMax Speech 引擎不生成字幕文件
+                if is_soulvoice_voice(voice_name) or is_qwen_engine(tts_engine) or tts_engine == "indextts2" or tts_engine == "doubaotts" or tts_engine == "minimax_tts":
                     # 获取实际音频文件的时长
                     duration = get_audio_duration_from_file(audio_file)
                     if duration <= 0:
@@ -2361,3 +2374,226 @@ def xiaomi_tts(text: str, voice_name: str, voice_file: str, speed: float = 1.0) 
 
     logger.error("小米 MiMo TTS 生成失败，已达到最大重试次数")
     return None
+
+
+def xiaomi_tts_with_clone(text: str, reference_audio_path: str, voice_file: str, speed: float = 1.0) -> Union[SubMaker, None]:
+    """
+    使用小米 MiMo TTS 音色克隆功能生成语音
+
+    Args:
+        text: 要转换的文本
+        reference_audio_path: 参考音频路径（用于克隆音色）
+        voice_file: 输出语音文件路径
+        speed: 语速 (默认 1.0)
+
+    Returns:
+        SubMaker 或 None
+    """
+    import base64
+
+    xiaomi_cfg = getattr(config, "xiaomi", {}) or {}
+    api_key = xiaomi_cfg.get("api_key", "")
+    base_url = xiaomi_cfg.get("base_url", "https://api.xiaomimimo.com/v1")
+
+    if not api_key:
+        logger.error("小米 MiMo TTS 音色克隆配置未完成：api_key 为空")
+        return None
+
+    if not os.path.exists(reference_audio_path):
+        logger.error(f"参考音频文件不存在: {reference_audio_path}")
+        return None
+
+    text = text.strip()
+    if not text:
+        logger.error("小米 MiMo TTS 文本为空")
+        return None
+
+    for attempt in range(3):
+        try:
+            logger.info(f"第 {attempt + 1} 次调用小米 MiMo TTS 音色克隆 API")
+
+            proxies = None
+            proxy_enabled = config.proxy.get("enabled", False)
+            if proxy_enabled:
+                proxy_url = config.proxy.get("https", config.proxy.get("http", ""))
+                if proxy_url:
+                    proxies = {"https": proxy_url, "http": proxy_url}
+
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key, base_url=base_url)
+
+            with open(reference_audio_path, "rb") as f:
+                audio_bytes = f.read()
+            audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+            mime_type = "audio/wav" if reference_audio_path.endswith(".wav") else "audio/mpeg"
+            voice_data = f"data:{mime_type};base64,{audio_base64}"
+
+            completion = client.chat.completions.create(
+                model="mimo-v2.5-tts-voiceclone",
+                messages=[
+                    {"role": "user", "content": ""},
+                    {"role": "assistant", "content": text}
+                ],
+                audio={
+                    "format": "wav",
+                    "voice": voice_data
+                },
+                timeout=120
+            )
+
+            message = completion.choices[0].message
+            audio_data = getattr(message, "audio", None)
+
+            if audio_data:
+                if isinstance(audio_data, bytes):
+                    audio_bytes_out = audio_data
+                elif isinstance(audio_data, dict) and "data" in audio_data:
+                    audio_bytes_out = base64.b64decode(audio_data["data"])
+                else:
+                    audio_bytes_out = getattr(audio_data, "data", None)
+                    if audio_bytes_out and isinstance(audio_bytes_out, str):
+                        audio_bytes_out = base64.b64decode(audio_bytes_out)
+
+                if audio_bytes_out:
+                    with open(voice_file, "wb") as f:
+                        f.write(audio_bytes_out)
+                    logger.success(f"小米 MiMo TTS 音色克隆成功: {voice_file}")
+                    sub_maker = new_sub_maker()
+                    estimated_duration_ms = max(1000, int(len(text) * 200))
+                    add_subtitle_event(sub_maker, 0, estimated_duration_ms * 10000, text)
+                    return sub_maker
+
+            logger.error(f"小米 MiMo TTS 音色克隆响应格式错误或无音频数据")
+
+        except Exception as e:
+            logger.error(f"小米 MiMo TTS 音色克隆错误: {str(e)}")
+            if attempt < 2:
+                time.sleep(2)
+
+    logger.error("小米 MiMo TTS 音色克隆生成失败，已达到最大重试次数")
+    return None
+
+
+async def minimax_streaming_tts(text: str, voice_id: str = "male-qn-qingse", speed: float = 1.0, output_file: str = None) -> tuple[bool, str]:
+    """
+    使用 MiniMax 流式 TTS 生成语音并实时播放
+
+    Args:
+        text: 要转换的文本
+        voice_id: 语音ID (默认 male-qn-qingse)
+        speed: 语速 (默认 1.0)
+        output_file: 输出文件路径 (可选)
+
+    Returns:
+        tuple: (success: bool, message: str)
+    """
+    minimax_cfg = getattr(config, "minimax", {}) or {}
+    api_key = minimax_cfg.get("api_key", "") or os.getenv("MINIMAX_API_KEY", "")
+
+    if not api_key:
+        return False, "MiniMax API key 未配置"
+
+    if not output_file:
+        output_file = f"temp_minimax_audio_{int(time.time())}.mp3"
+
+    try:
+        import websockets
+
+        url = "wss://api.minimaxi.com/ws/v1/t2a_v2"
+        headers = {"Authorization": f"Bearer {api_key}"}
+
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        ws = await websockets.connect(url, additional_headers=headers, ssl=ssl_context)
+        connected = json.loads(await ws.recv())
+
+        if connected.get("event") != "connected_success":
+            return False, "MiniMax WebSocket 连接失败"
+
+        start_msg = {
+            "event": "task_start",
+            "model": "speech-2.8-hd",
+            "voice_setting": {
+                "voice_id": voice_id,
+                "speed": speed,
+                "vol": 1,
+                "pitch": 0,
+                "english_normalization": False
+            },
+            "audio_setting": {
+                "sample_rate": 32000,
+                "bitrate": 128000,
+                "format": "mp3",
+                "channel": 1
+            }
+        }
+        await ws.send(json.dumps(start_msg))
+        response = json.loads(await ws.recv())
+
+        if response.get("event") != "task_started":
+            return False, "MiniMax 任务启动失败"
+
+        await ws.send(json.dumps({"event": "task_continue", "text": text}))
+
+        audio_data = b""
+        chunk_counter = 0
+
+        while True:
+            response = json.loads(await ws.recv())
+
+            if "data" in response and "audio" in response["data"]:
+                audio_hex = response["data"]["audio"]
+                if audio_hex:
+                    audio_bytes = bytes.fromhex(audio_hex)
+                    audio_data += audio_bytes
+                    chunk_counter += 1
+
+            if response.get("is_final"):
+                logger.info(f"MiniMax 流式TTS完成: {chunk_counter} chunks")
+                break
+
+        await ws.send(json.dumps({"event": "task_finish"}))
+        await ws.close()
+
+        if audio_data:
+            with open(output_file, "wb") as f:
+                f.write(audio_data)
+            return True, output_file
+
+        return False, "未获取到音频数据"
+
+    except Exception as e:
+        logger.error(f"MiniMax 流式TTS错误: {str(e)}")
+        return False, str(e)
+
+
+def minimax_tts(text: str, voice_id: str = "male-qn-qingse", voice_file: str = None, speed: float = 1.0) -> Union[SubMaker, None]:
+    """
+    使用 MiniMax TTS 生成语音 (同步版本)
+    """
+    if not voice_file:
+        voice_file = f"temp_voice_{int(time.time())}.mp3"
+
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        success, result = loop.run_until_complete(
+            minimax_streaming_tts(text, voice_id, speed, voice_file)
+        )
+        loop.close()
+
+        if success:
+            sub_maker = new_sub_maker()
+            estimated_duration_ms = max(1000, int(len(text) * 200))
+            add_subtitle_event(sub_maker, 0, estimated_duration_ms * 10000, text)
+            return sub_maker
+
+        logger.error(f"MiniMax TTS 失败: {result}")
+        return None
+
+    except Exception as e:
+        logger.error(f"MiniMax TTS 错误: {str(e)}")
+        return None

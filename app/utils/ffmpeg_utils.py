@@ -21,6 +21,7 @@ _FFMPEG_HW_ACCEL_INFO = {
     "fallback_encoder": None,     # 备用编码器
     "platform": None,             # 平台信息
     "gpu_vendor": None,           # GPU厂商
+    "gpu_kind": None,             # GPU类型说明
     "tested_methods": []          # 已测试的方法
 }
 
@@ -334,10 +335,16 @@ def detect_hardware_acceleration() -> Dict[str, Union[bool, str, List[str], None
                 elif method == "amf":
                     _FFMPEG_HW_ACCEL_INFO["hwaccel_args"] = ["-hwaccel", "auto"]
 
-                # 判断是否为独立GPU
-                _FFMPEG_HW_ACCEL_INFO["is_dedicated_gpu"] = gpu_vendor in ["nvidia", "amd"] or (gpu_vendor == "intel" and "arc" in _get_gpu_info().lower())
-
-                _FFMPEG_HW_ACCEL_INFO["message"] = f"使用 {method} 硬件加速 ({gpu_vendor} GPU)"
+                # 判断GPU类型。Apple Silicon 是内建统一内存 GPU，不是传统独显，
+                # 但 VideoToolbox 仍然是可用的硬件编解码路径。
+                if system == "darwin" and gpu_vendor == "apple":
+                    _FFMPEG_HW_ACCEL_INFO["is_dedicated_gpu"] = False
+                    _FFMPEG_HW_ACCEL_INFO["gpu_kind"] = "Apple Silicon 内建 GPU"
+                    _FFMPEG_HW_ACCEL_INFO["message"] = f"使用 {method} 硬件加速（Apple Silicon / VideoToolbox）"
+                else:
+                    _FFMPEG_HW_ACCEL_INFO["is_dedicated_gpu"] = gpu_vendor in ["nvidia", "amd"] or (gpu_vendor == "intel" and "arc" in _get_gpu_info().lower())
+                    _FFMPEG_HW_ACCEL_INFO["gpu_kind"] = "独立 GPU" if _FFMPEG_HW_ACCEL_INFO["is_dedicated_gpu"] else "集成/内建 GPU"
+                    _FFMPEG_HW_ACCEL_INFO["message"] = f"使用 {method} 硬件加速 ({gpu_vendor} GPU)"
                 logger.debug(f"硬件加速检测成功: {method} ({gpu_vendor})")
                 break
 
@@ -991,6 +998,7 @@ def force_software_encoding() -> None:
         "hwaccel_args": [],
         "message": "强制使用软件编码",
         "is_dedicated_gpu": False,
+        "gpu_kind": "软件编码",
         "fallback_available": True,
         "fallback_encoder": "libx264"
     })
@@ -1021,6 +1029,7 @@ def reset_hwaccel_detection() -> None:
         "fallback_encoder": None,
         "platform": None,
         "gpu_vendor": None,
+        "gpu_kind": None,
         "tested_methods": []
     }
 

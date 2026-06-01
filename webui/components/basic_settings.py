@@ -1,9 +1,19 @@
 import traceback
+from datetime import datetime
+import shlex
+import shutil
+import subprocess
 
 import streamlit as st
 import os
 from app.config import config
 from app.config.defaults import (
+    DEFAULT_AGENT_GATEWAY_BASE_URL,
+    DEFAULT_AGENT_GATEWAY_MODEL_NAME,
+    DEFAULT_AGENT_COLLABORATION_RULES,
+    DEFAULT_AGENT_ROLES,
+    DEFAULT_AGENT_WIKI_PATH,
+    DEFAULT_HERMES_CLI_COMMAND,
     DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
     DEFAULT_OPENAI_COMPATIBLE_PROVIDER,
     DEFAULT_TEXT_LLM_PROVIDER,
@@ -23,6 +33,8 @@ OPENAI_COMPATIBLE_GATEWAY_BASE_URLS = {
     "openrouter": "https://openrouter.ai/api/v1",
     "moonshot": "https://api.moonshot.cn/v1",
     "gemini(openai)": "",
+    "cherry_studio": "http://127.0.0.1:23333/v1",
+    "local_hermes": "http://127.0.0.1:23333/v1",
 }
 
 
@@ -125,6 +137,142 @@ def validate_openai_compatible_model_name(model_name: str, model_type: str) -> t
     return True, ""
 
 
+def run_hermes_oneshot(command: str, prompt: str, workdir: str, timeout: int = 120) -> tuple[bool, str]:
+    """Run local Hermes in oneshot mode for lightweight review tasks."""
+    if not command or not command.strip():
+        return False, "Hermes 命令为空"
+    if not prompt or not prompt.strip():
+        return False, "测试 Prompt 为空"
+
+    try:
+        cmd = shlex.split(command)
+    except ValueError as e:
+        return False, f"Hermes 命令解析失败: {str(e)}"
+
+    if not cmd:
+        return False, "Hermes 命令为空"
+
+    if os.path.sep not in cmd[0] and shutil.which(cmd[0]) is None:
+        return False, f"找不到 Hermes 命令: {cmd[0]}"
+
+    cwd = (workdir or "").strip() or config.root_dir
+    if not os.path.isdir(cwd):
+        return False, f"Hermes 工作目录不存在: {cwd}"
+
+    try:
+        completed = subprocess.run(
+            [*cmd, "-z", prompt],
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"Hermes 执行超时（>{timeout}s）"
+    except Exception as e:
+        return False, f"Hermes 执行失败: {str(e)}"
+
+    output = (completed.stdout or "").strip()
+    error_output = (completed.stderr or "").strip()
+    if completed.returncode != 0:
+        message = error_output or output or f"Hermes 退出码: {completed.returncode}"
+        return False, message[-2000:]
+    return True, output or "Hermes 已返回空结果"
+
+
+def test_openai_compatible_gateway(api_key: str, base_url: str, model_name: str) -> tuple[bool, str]:
+    """Test a local OpenAI-compatible agent gateway without logging secrets."""
+    try:
+        import requests
+
+        if not base_url or not base_url.strip():
+            return False, "Base URL 不能为空"
+        if not model_name or not model_name.strip():
+            return False, "模型名称不能为空"
+
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        response = requests.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers=headers,
+            json={
+                "model": model_name,
+                "messages": [{"role": "user", "content": "请直接回复：Hermes gateway ok"}],
+                "stream": False,
+                "max_tokens": 40,
+            },
+            timeout=10,
+        )
+        if response.status_code == 200:
+            return True, "本地 Agent 网关连接成功"
+        return False, f"本地 Agent 网关连接失败: HTTP {response.status_code}"
+    except Exception as e:
+        return False, f"本地 Agent 网关连接失败: {str(e)}"
+
+
+def resolve_project_wiki_path(wiki_path: str) -> tuple[bool, str]:
+    """Resolve a wiki path inside the project root."""
+    raw_path = (wiki_path or "").strip() or DEFAULT_AGENT_WIKI_PATH
+    if os.path.isabs(raw_path):
+        target_path = os.path.abspath(raw_path)
+    else:
+        target_path = os.path.abspath(os.path.join(config.root_dir, raw_path))
+
+    root_dir = os.path.abspath(config.root_dir)
+    if os.path.commonpath([root_dir, target_path]) != root_dir:
+        return False, "Wiki 路径必须位于当前项目目录内"
+    if not target_path.endswith(".md"):
+        return False, "Wiki 路径必须是 Markdown 文件（.md）"
+    return True, target_path
+
+
+def should_save_agent_feedback_to_wiki(content: str, min_chars: int = 120) -> bool:
+    """Heuristic gate for useful agent feedback."""
+    normalized = (content or "").strip()
+    if len(normalized) < max(1, int(min_chars or 0)):
+        return False
+    low_value_markers = {"ok", "收到", "已接入", "连接成功", "helper ok"}
+    if normalized.lower() in low_value_markers:
+        return False
+    return True
+
+
+def append_agent_wiki_note(
+    wiki_path: str,
+    title: str,
+    content: str,
+    source: str = "Hermes",
+) -> tuple[bool, str]:
+    """Append a reviewed agent note to the project wiki."""
+    meaningful = (content or "").strip()
+    if not meaningful:
+        return False, "Wiki 内容为空"
+
+    ok, resolved_or_error = resolve_project_wiki_path(wiki_path)
+    if not ok:
+        return False, resolved_or_error
+
+    target_path = resolved_or_error
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    if not os.path.exists(target_path):
+        with open(target_path, "w", encoding="utf-8") as fp:
+            fp.write("# NarratoAI Agent Notes\n\n")
+
+    entry_title = (title or "Agent 反馈").strip()
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(target_path, "a", encoding="utf-8") as fp:
+        fp.write(f"## {entry_title}\n\n")
+        fp.write(f"- 时间: {timestamp}\n")
+        fp.write(f"- 来源: {source}\n\n")
+        fp.write(meaningful)
+        fp.write("\n\n")
+
+    return True, target_path
+
+
 def normalize_openai_compatible_model_name(model_name: str) -> str:
     """仅剥离误保存的 openai/ 前缀，保留完整模型名称。"""
     return normalize_openai_compatible_model_id(
@@ -143,26 +291,46 @@ def show_config_validation_errors(errors: list):
 def render_basic_settings(tr):
     """渲染基础设置面板"""
     with st.expander(tr("Basic Settings"), expanded=False):
-        config_panels = st.columns(3)
-        left_config_panel = config_panels[0]
-        middle_config_panel = config_panels[1]
-        right_config_panel = config_panels[2]
+        section_options = {
+            "常用设置": "general",
+            "视频分析模型": "vision",
+            "文案生成模型": "text",
+            "Hermes / Agent": "agent",
+        }
+        selected_section_label = st.selectbox(
+            "设置分组",
+            options=list(section_options.keys()),
+            key="basic_settings_section_select",
+            help="右侧栏宽度有限，每次只显示一组设置，避免配置项挤在一起。",
+        )
+        selected_section = section_options[selected_section_label]
 
-        with left_config_panel:
+        st.caption(get_basic_settings_section_summary(selected_section))
+
+        if selected_section == "general":
             render_language_settings(tr)
             render_proxy_settings(tr)
+        elif selected_section == "vision":
+            render_vision_llm_settings(tr)
+        elif selected_section == "text":
+            render_text_llm_settings(tr)
+        else:
+            render_local_agent_settings(tr)
 
-        with middle_config_panel:
-            render_vision_llm_settings(tr)  # 视频分析模型设置
 
-        with right_config_panel:
-            render_text_llm_settings(tr)  # 文案生成模型设置
+def get_basic_settings_section_summary(section: str) -> str:
+    summaries = {
+        "general": "语言、代理和剪映草稿路径。",
+        "vision": "视频帧理解模型，Kaggle 离线识别也在这里查看入口。",
+        "text": "生成文案/解说使用的 OpenAI 兼容模型。",
+        "agent": "本地 Hermes 副手、多 Agent 模板和 wiki 沉淀。",
+    }
+    return summaries.get(section, "")
 
 
 def render_language_settings(tr):
-    st.subheader(tr("Proxy Settings"))
-
     """渲染语言设置"""
+    st.markdown("**语言**")
     system_locale = utils.get_system_locale()
     i18n_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "i18n")
     locales = utils.load_locales(i18n_dir)
@@ -188,6 +356,7 @@ def render_language_settings(tr):
 
 def render_proxy_settings(tr):
     """渲染代理设置"""
+    st.markdown("**代理**")
     # 获取当前代理状态
     proxy_enabled = config.proxy.get("enabled", False)
     proxy_url_http = config.proxy.get("http")
@@ -218,13 +387,217 @@ def render_proxy_settings(tr):
         config.proxy["https"] = ""
 
     # 剪映草稿地址设置
-    st.subheader("剪映草稿设置")
+    st.markdown("**剪映草稿**")
     jianying_draft_path = st.text_input(
         "剪映草稿文件夹路径",
         value=config.ui.get("jianying_draft_path", ""),
         help="剪映草稿文件夹路径，例如：C:\\Users\\用户名\\Documents\\JianyingPro Drafts"
     )
     config.ui["jianying_draft_path"] = jianying_draft_path
+    if jianying_draft_path and not os.path.isdir(jianying_draft_path):
+        st.warning("当前路径不存在，导出到剪映草稿前需要先创建或改成正确目录。")
+    if st.button("保存常用设置", key="save_general_basic_settings", use_container_width=True):
+        try:
+            config.save_config()
+            st.success("常用设置已保存")
+        except Exception as e:
+            st.error(f"保存常用设置失败: {str(e)}")
+
+
+def render_local_agent_settings(tr):
+    """Render local Hermes / agent helper settings."""
+    st.markdown("**本地 Hermes / 多 Agent**")
+
+    enabled = st.checkbox(
+        "启用本地 Hermes 副手",
+        value=bool(config.app.get("agent_gateway_enabled", False)),
+        help="用于简单审片、文案反馈、配置建议等轻量任务；主流程失败时不会被阻断。",
+        key="agent_gateway_enabled_input",
+    )
+
+    mode_options = ["hermes_cli", "openai_compatible_gateway"]
+    mode_labels = {
+        "hermes_cli": "Hermes CLI（推荐）",
+        "openai_compatible_gateway": "OpenAI-compatible 网关",
+    }
+    current_mode = config.app.get("agent_execution_mode", "hermes_cli")
+    selected_mode = st.selectbox(
+        "执行方式",
+        options=mode_options,
+        index=mode_options.index(current_mode) if current_mode in mode_options else 0,
+        format_func=lambda value: mode_labels.get(value, value),
+        key="agent_execution_mode_input",
+    )
+
+    config.app["agent_gateway_enabled"] = enabled
+    config.app["agent_execution_mode"] = selected_mode
+
+    if selected_mode == "hermes_cli":
+        hermes_command = st.text_input(
+            "Hermes 命令",
+            value=config.app.get("hermes_cli_command", DEFAULT_HERMES_CLI_COMMAND),
+            help="会自动追加 -z <prompt> 执行 oneshot。密钥和模型由 Hermes 自己的 config.yaml/.env 管理。",
+            key="hermes_cli_command_input",
+        )
+        hermes_workdir = st.text_input(
+            "工作目录",
+            value=config.app.get("hermes_cli_workdir", "") or config.root_dir,
+            key="hermes_cli_workdir_input",
+        )
+
+        config.app["agent_gateway_type"] = "hermes_cli"
+        config.app["hermes_cli_command"] = hermes_command
+        config.app["hermes_cli_workdir"] = hermes_workdir
+
+        test_prompt = st.text_area(
+            "Hermes 测试任务",
+            value="你是 NarratoAI 的轻量副手。请用一句话评价：本地 Hermes 可用于简单反馈，Codex 负责校对和实现。",
+            height=88,
+            key="hermes_cli_test_prompt_input",
+        )
+        if st.button("测试 Hermes 副手", key="test_hermes_cli_agent"):
+            with st.spinner("正在调用本地 Hermes..."):
+                success, message = run_hermes_oneshot(
+                    command=hermes_command,
+                    prompt=test_prompt,
+                    workdir=hermes_workdir,
+                    timeout=180,
+                )
+            if success:
+                st.success("Hermes 已返回反馈")
+                st.session_state["last_hermes_agent_feedback"] = message
+                st.code(message[:4000], language="text")
+            else:
+                st.error(message)
+    else:
+        gateway_type_options = ["cherry_studio", "local_hermes", "custom"]
+        gateway_labels = {
+            "cherry_studio": "Cherry Studio",
+            "local_hermes": "Local Hermes API",
+            "custom": "自定义",
+        }
+        current_gateway_type = config.app.get("agent_gateway_type", "cherry_studio")
+        gateway_type = st.selectbox(
+            "网关类型",
+            options=gateway_type_options,
+            index=gateway_type_options.index(current_gateway_type) if current_gateway_type in gateway_type_options else 0,
+            format_func=lambda value: gateway_labels.get(value, value),
+            key="agent_gateway_type_input",
+        )
+        default_gateway_base_url = OPENAI_COMPATIBLE_GATEWAY_BASE_URLS.get(
+            gateway_type,
+            DEFAULT_AGENT_GATEWAY_BASE_URL,
+        )
+        gateway_base_url = st.text_input(
+            "Agent Base URL",
+            value=config.app.get("agent_gateway_base_url", default_gateway_base_url) or default_gateway_base_url,
+            placeholder=default_gateway_base_url,
+            key="agent_gateway_base_url_input",
+        )
+        gateway_model = st.text_input(
+            "Agent 模型",
+            value=config.app.get("agent_gateway_model_name", DEFAULT_AGENT_GATEWAY_MODEL_NAME),
+            key="agent_gateway_model_input",
+        )
+        gateway_api_key = st.text_input(
+            "Agent API Key",
+            value=config.app.get("agent_gateway_api_key", ""),
+            type="password",
+            help="建议改用环境变量 NARRATOAI_AGENT_GATEWAY_API_KEY；不要把共享密钥写进仓库。",
+            key="agent_gateway_api_key_input",
+        )
+
+        config.app["agent_gateway_type"] = gateway_type
+        config.app["agent_gateway_base_url"] = gateway_base_url
+        config.app["agent_gateway_model_name"] = gateway_model
+        if gateway_api_key:
+            config.app["agent_gateway_api_key"] = gateway_api_key
+
+        if st.button("测试 Agent 网关", key="test_agent_gateway"):
+            with st.spinner("正在测试本地 Agent 网关..."):
+                success, message = test_openai_compatible_gateway(
+                    api_key=gateway_api_key,
+                    base_url=gateway_base_url,
+                    model_name=gateway_model,
+                )
+            if success:
+                st.success(message)
+            else:
+                st.error(message)
+
+    multi_agent_enabled = st.checkbox(
+        "启用多 Agent 反馈模板",
+        value=bool(config.app.get("agent_multi_agent_enabled", False)),
+        help="把审片、视觉核对、文案润色拆成多个角色提示；当前作为 Hermes 反馈模板保存。",
+        key="agent_multi_agent_enabled_input",
+    )
+    agent_roles = st.text_area(
+        "Agent 角色模板",
+        value=config.app.get("agent_roles", DEFAULT_AGENT_ROLES),
+        height=120,
+        key="agent_roles_input",
+    )
+    config.app["agent_multi_agent_enabled"] = multi_agent_enabled
+    config.app["agent_roles"] = agent_roles
+
+    collaboration_rules = st.text_area(
+        "Hermes 省 token 协作规则",
+        value=config.app.get("agent_collaboration_rules", DEFAULT_AGENT_COLLABORATION_RULES),
+        height=140,
+        help="作为给 Hermes 的默认约束：何时简短、何时计划、什么内容值得沉淀。",
+        key="agent_collaboration_rules_input",
+    )
+    config.app["agent_collaboration_rules"] = collaboration_rules
+
+    wiki_enabled = st.checkbox(
+        "有价值反馈写入 Wiki",
+        value=bool(config.app.get("agent_wiki_enabled", True)),
+        help="Hermes/Codex 认为有长期价值的反馈，会追加到项目内 Markdown wiki。",
+        key="agent_wiki_enabled_input",
+    )
+    wiki_path = st.text_input(
+        "Wiki 文件",
+        value=config.app.get("agent_wiki_path", DEFAULT_AGENT_WIKI_PATH),
+        key="agent_wiki_path_input",
+    )
+    wiki_min_chars = st.number_input(
+        "最少字数",
+        min_value=20,
+        max_value=2000,
+        value=int(config.app.get("agent_wiki_min_chars", 120) or 120),
+        step=20,
+        key="agent_wiki_min_chars_input",
+    )
+
+    config.app["agent_wiki_enabled"] = wiki_enabled
+    config.app["agent_wiki_path"] = wiki_path
+    config.app["agent_wiki_min_chars"] = int(wiki_min_chars)
+
+    last_feedback = st.session_state.get("last_hermes_agent_feedback", "")
+    if wiki_enabled and last_feedback:
+        if st.button("保存最近 Hermes 反馈到 Wiki", key="save_last_hermes_feedback_to_wiki"):
+            if not should_save_agent_feedback_to_wiki(last_feedback, int(wiki_min_chars)):
+                st.warning("最近反馈太短或信息量不足，已跳过写入 Wiki。")
+            else:
+                success, message = append_agent_wiki_note(
+                    wiki_path=wiki_path,
+                    title="Hermes 反馈沉淀",
+                    content=last_feedback,
+                    source="Hermes CLI",
+                )
+                if success:
+                    st.success(f"已写入 Wiki: {message}")
+                else:
+                    st.error(message)
+
+    if st.button("保存 Hermes / Agent 配置", key="save_local_agent_settings"):
+        try:
+            config.save_config()
+            UnifiedLLMService.clear_cache()
+            st.success("本地 Hermes / Agent 配置已保存")
+        except Exception as e:
+            st.error(f"保存配置失败: {str(e)}")
+            logger.error(f"保存本地 Hermes / Agent 配置失败: {str(e)}")
 
 
 def test_vision_model_connection(api_key, base_url, model_name, provider, tr):
@@ -241,7 +614,7 @@ def test_vision_model_connection(api_key, base_url, model_name, provider, tr):
         str: 测试结果消息
     """
     import requests
-    logger.debug(f"大模型连通性测试: {base_url} 模型: {model_name} apikey: {api_key}")
+    logger.debug(f"大模型连通性测试: {base_url} 模型: {model_name}")
     if provider.lower() == 'gemini':
         # 原生Gemini API测试
         try:
@@ -347,9 +720,7 @@ def test_openai_compatible_vision_model(api_key: str, base_url: str, model_name:
         from openai import OpenAI
         from PIL import Image
 
-        logger.debug(
-            f"OpenAI 兼容视觉模型连通性测试: model={model_name}, api_key={api_key[:10]}..., base_url={base_url}"
-        )
+        logger.debug(f"OpenAI 兼容视觉模型连通性测试: model={model_name}, base_url={base_url}")
 
         client = OpenAI(
             api_key=api_key,
@@ -402,9 +773,7 @@ def test_openai_compatible_text_model(api_key: str, base_url: str, model_name: s
     try:
         from openai import OpenAI
 
-        logger.debug(
-            f"OpenAI 兼容文本模型连通性测试: model={model_name}, api_key={api_key[:10]}..., base_url={base_url}"
-        )
+        logger.debug(f"OpenAI 兼容文本模型连通性测试: model={model_name}, base_url={base_url}")
 
         client = OpenAI(
             api_key=api_key,
@@ -435,86 +804,104 @@ def test_openai_compatible_text_model(api_key: str, base_url: str, model_name: s
         return False, f"连接失败: {error_msg}"
 
 def render_vision_llm_settings(tr):
-    """渲染视频分析模型设置（OpenAI 兼容 统一配置）"""
-    st.subheader(tr("Vision Model Settings"))
+    """渲染视频分析模型设置"""
+    st.markdown(f"**{tr('Vision Model Settings')}**")
 
-    # 固定使用 OpenAI 兼容 提供商
-    config.app["vision_llm_provider"] = DEFAULT_VISION_LLM_PROVIDER
+    # 获取当前 provider
+    current_provider = config.app.get("vision_llm_provider", "gemini")
 
-    # 获取已保存的配置
-    full_vision_model_name = config.app.get("vision_openai_model_name") or DEFAULT_VISION_OPENAI_MODEL_NAME
-    vision_api_key = config.app.get("vision_openai_api_key", "")
-    vision_base_url = config.app.get("vision_openai_base_url", DEFAULT_OPENAI_COMPATIBLE_BASE_URL)
-    
-    # 固定 provider 为 openai，模型输入框保留完整模型名称
-    current_provider, current_model = get_openai_compatible_ui_values(
-        full_vision_model_name,
-        DEFAULT_VISION_OPENAI_MODEL_NAME,
-        provider=DEFAULT_VISION_LLM_PROVIDER,
+    # Provider 选择
+    provider_options = ["gemini", "openai", "kaggle"]
+    provider_labels = {"gemini": "Gemini 原生", "openai": "OpenAI 兼容", "kaggle": "Kaggle (免费GPU)"}
+    selected_provider = st.selectbox(
+        tr("Vision Model Provider"),
+        options=provider_options,
+        index=provider_options.index(current_provider) if current_provider in provider_options else 0,
+        key="vision_provider_select"
     )
+    config.app["vision_llm_provider"] = selected_provider
 
-    # 定义支持的 provider 列表
-    OPENAI_COMPATIBLE_PROVIDERS = ["openai"]
+    # 根据 provider 获取对应配置
+    if selected_provider == "gemini":
+        vision_api_key = config.app.get("vision_gemini_api_key", "")
+        vision_model = config.app.get("vision_gemini_model_name", "gemini-2.0-flash")
+        vision_base_url = config.app.get("vision_gemini_base_url", "")
+    elif selected_provider == "kaggle":
+        vision_api_key = config.app.get("vision_kaggle_api_key", "")
+        vision_model = config.app.get("vision_kaggle_model_name", "Qwen/Qwen2.5-VL-7B-Instruct")
+        vision_base_url = config.app.get("vision_kaggle_base_url", "")
+    else:
+        vision_api_key = config.app.get("vision_openai_api_key", "")
+        vision_model = config.app.get("vision_openai_model_name", "Qwen/Qwen3.5-122B-A10B")
+        vision_base_url = config.app.get("vision_openai_base_url", "")
 
-    # 渲染配置输入框
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        selected_provider = st.selectbox(
-            tr("Vision Model Provider"),
-            options=OPENAI_COMPATIBLE_PROVIDERS,
-            index=OPENAI_COMPATIBLE_PROVIDERS.index(current_provider) if current_provider in OPENAI_COMPATIBLE_PROVIDERS else 0,
-            key="vision_provider_select"
-        )
-    
-    with col2:
-        model_name_input = st.text_input(
-            tr("Vision Model Name"),
-            value=current_model,
-            help="输入完整模型名称\n\n"
-                 "常用示例:\n"
-                 "• Qwen/Qwen3.5-122B-A10B\n"
-                 "• gemini/gemini-2.0-flash-lite\n"
-                 "• gpt-4o\n"
-                 "• Qwen/Qwen2.5-VL-32B-Instruct (SiliconFlow)\n\n"
-                 "支持常见 OpenAI 兼容网关（如 OpenAI/DeepSeek/OpenRouter/SiliconFlow）",
-            key="vision_model_input"
-        )
-
-    # 组合完整的模型名称
-    st_vision_model_name = normalize_openai_compatible_model_name(model_name_input)
-
+    # API Key
     st_vision_api_key = st.text_input(
-        tr("Vision API Key"),
+        tr("API Key"),
         value=vision_api_key,
         type="password",
-        help="对应 provider 的 API 密钥\n\n"
-             "获取地址:\n"
-             "• Gemini: https://makersuite.google.com/app/apikey\n"
-             "• OpenAI: https://platform.openai.com/api-keys\n"
-             "• Qwen: https://bailian.console.aliyun.com/\n"
-             "• SiliconFlow: https://cloud.siliconflow.cn/account/ak"
+        key="vision_api_key_input"
     )
 
-    vision_base_help, vision_base_required, vision_placeholder = build_base_url_help(
-        selected_provider, "视频分析模型"
+    # Base URL（OpenAI 兼容和 Kaggle 需要）
+    if selected_provider != "gemini":
+        st_vision_base_url = st.text_input(
+            tr("Base URL"),
+            value=vision_base_url,
+            placeholder="" if selected_provider == "kaggle" else "https://api.example.com/v1",
+            key="vision_base_url_input"
+        )
+        if selected_provider == "kaggle":
+            st.info("Kaggle 模式用于离线 GPU 视频识别，不需要 API Key 或 ngrok；请在脚本生成面板导出完整视频任务包。")
+            kaggle_runner_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+                "resource", "kaggle", "narratoai_kaggle_video_runner.py"
+            )
+            if os.path.exists(kaggle_runner_path):
+                with open(kaggle_runner_path, "rb") as f:
+                    runner_data = f.read()
+                st.download_button(
+                    "📥 下载 Kaggle Runner 脚本",
+                    data=runner_data,
+                    file_name="narratoai_kaggle_video_runner.py",
+                    mime="text/x-python",
+                    key="download_kaggle_runner"
+                )
+            else:
+                st.caption("Kaggle Runner 未找到，请从 resource/kaggle/ 目录手动下载")
+    else:
+        st_vision_base_url = ""
+        st_vision_base_url_input_placeholder = ""
+
+    # Model 名称
+    model_name_input = st.text_input(
+        tr("Model Name"),
+        value=vision_model,
+        key="vision_model_input"
     )
-    st_vision_base_url = st.text_input(
-        tr("Vision Base URL"),
-        value=vision_base_url,
-        help=vision_base_help,
-        placeholder=vision_placeholder or None
-    )
-    if vision_base_required and not st_vision_base_url:
-        info_example = vision_placeholder or "https://your-openai-compatible-endpoint/v1"
-        st.info(f"请在上方填写 OpenAI 兼容网关地址，例如：{info_example}")
+
+    # 保存配置
+    if selected_provider == "gemini":
+        config.app["vision_gemini_api_key"] = st_vision_api_key
+        config.app["vision_gemini_model_name"] = model_name_input
+    elif selected_provider == "kaggle":
+        config.app["vision_kaggle_api_key"] = st_vision_api_key
+        config.app["vision_kaggle_model_name"] = model_name_input
+        config.app["vision_kaggle_base_url"] = st_vision_base_url
+    else:
+        config.app["vision_openai_api_key"] = st_vision_api_key
+        config.app["vision_openai_model_name"] = model_name_input
+        config.app["vision_openai_base_url"] = st_vision_base_url
 
     # 添加测试连接按钮
     if st.button(tr("Test Connection"), key="test_vision_connection"):
         test_errors = []
-        if not st_vision_api_key:
+        if selected_provider != "kaggle" and not st_vision_api_key:
             test_errors.append("请先输入 API 密钥")
         if not model_name_input:
             test_errors.append("请先输入模型名称")
+        if selected_provider == "kaggle":
+            test_errors.append("Kaggle 离线模式无需连接测试，请在脚本生成面板导出任务包")
 
         if test_errors:
             for error in test_errors:
@@ -522,12 +909,21 @@ def render_vision_llm_settings(tr):
         else:
             with st.spinner(tr("Testing connection...")):
                 try:
-                    success, message = test_openai_compatible_vision_model(
-                        api_key=st_vision_api_key,
-                        base_url=st_vision_base_url,
-                        model_name=st_vision_model_name,
-                        tr=tr
-                    )
+                    if selected_provider == "gemini":
+                        from app.services.llm.gemini_provider import GeminiVisionProvider
+                        provider = GeminiVisionProvider(api_key=st_vision_api_key, model_name=model_name_input)
+                        success, message = provider.test_connection()
+                    else:
+                        if selected_provider == "kaggle":
+                            base_url_to_test = st_vision_base_url
+                        else:
+                            base_url_to_test = st_vision_base_url
+                        success, message = test_openai_compatible_vision_model(
+                            api_key=st_vision_api_key,
+                            base_url=base_url_to_test,
+                            model_name=model_name_input,
+                            tr=tr
+                        )
 
                     if success:
                         st.success(message)
@@ -535,57 +931,8 @@ def render_vision_llm_settings(tr):
                         st.error(message)
                 except Exception as e:
                     st.error(f"测试连接时发生错误: {str(e)}")
-                    logger.error(f"OpenAI 兼容 视频分析模型连接测试失败: {str(e)}")
+                    logger.error(f"视频分析模型连接测试失败: {str(e)}")
 
-    # 验证和保存配置
-    validation_errors = []
-    config_changed = False
-
-    # 验证模型名称
-    if st_vision_model_name:
-        # 这里的验证逻辑可能需要微调，因为我们现在是自动组合的
-        is_valid, error_msg = validate_openai_compatible_model_name(st_vision_model_name, "视频分析")
-        if is_valid:
-            config.app["vision_openai_model_name"] = st_vision_model_name
-            st.session_state["vision_openai_model_name"] = st_vision_model_name
-            config_changed = True
-        else:
-            validation_errors.append(error_msg)
-
-    # 验证 API 密钥
-    if st_vision_api_key:
-        is_valid, error_msg = validate_api_key(st_vision_api_key, "视频分析")
-        if is_valid:
-            config.app["vision_openai_api_key"] = st_vision_api_key
-            st.session_state["vision_openai_api_key"] = st_vision_api_key
-            config_changed = True
-        else:
-            validation_errors.append(error_msg)
-
-    # 验证 Base URL（可选）
-    if st_vision_base_url:
-        is_valid, error_msg = validate_base_url(st_vision_base_url, "视频分析")
-        if is_valid:
-            config.app["vision_openai_base_url"] = st_vision_base_url
-            st.session_state["vision_openai_base_url"] = st_vision_base_url
-            config_changed = True
-        else:
-            validation_errors.append(error_msg)
-
-    # 显示验证错误
-    show_config_validation_errors(validation_errors)
-
-    # 保存配置
-    if config_changed and not validation_errors:
-        try:
-            config.save_config()
-            # 清除缓存，确保下次使用新配置
-            UnifiedLLMService.clear_cache()
-            if st_vision_api_key or st_vision_base_url or st_vision_model_name:
-                st.success(f"视频分析模型配置已保存（OpenAI 兼容）")
-        except Exception as e:
-            st.error(f"保存配置失败: {str(e)}")
-            logger.error(f"保存视频分析配置失败: {str(e)}")
 
 
 def test_text_model_connection(api_key, base_url, model_name, provider, tr):
@@ -602,7 +949,7 @@ def test_text_model_connection(api_key, base_url, model_name, provider, tr):
         str: 测试结果消息
     """
     import requests
-    logger.debug(f"大模型连通性测试: {base_url} 模型: {model_name} apikey: {api_key}")
+    logger.debug(f"大模型连通性测试: {base_url} 模型: {model_name}")
 
     try:
         # 构建统一的测试请求（遵循OpenAI格式）
@@ -693,7 +1040,7 @@ def test_text_model_connection(api_key, base_url, model_name, provider, tr):
 
 def render_text_llm_settings(tr):
     """渲染文案生成模型设置（OpenAI 兼容 统一配置）"""
-    st.subheader(tr("Text Generation Model Settings"))
+    st.markdown(f"**{tr('Text Generation Model Settings')}**")
 
     # 固定使用 OpenAI 兼容 提供商
     config.app["text_llm_provider"] = DEFAULT_TEXT_LLM_PROVIDER
@@ -713,29 +1060,25 @@ def render_text_llm_settings(tr):
     # 定义支持的 provider 列表
     OPENAI_COMPATIBLE_PROVIDERS = ["openai"]
 
-    # 渲染配置输入框
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        selected_provider = st.selectbox(
-            tr("Text Model Provider"),
-            options=OPENAI_COMPATIBLE_PROVIDERS,
-            index=OPENAI_COMPATIBLE_PROVIDERS.index(current_provider) if current_provider in OPENAI_COMPATIBLE_PROVIDERS else 0,
-            key="text_provider_select"
-        )
-    
-    with col2:
-        model_name_input = st.text_input(
-            tr("Text Model Name"),
-            value=current_model,
-            help="输入完整模型名称\n\n"
-                 "常用示例:\n"
-                 "• Pro/zai-org/GLM-5\n"
-                 "• deepseek/deepseek-chat\n"
-                 "• gpt-4o\n"
-                 "• deepseek-ai/DeepSeek-R1 (SiliconFlow)\n\n"
-                 "支持常见 OpenAI 兼容网关（如 OpenAI/DeepSeek/OpenRouter/SiliconFlow）",
-            key="text_model_input"
-        )
+    selected_provider = st.selectbox(
+        tr("Text Model Provider"),
+        options=OPENAI_COMPATIBLE_PROVIDERS,
+        index=OPENAI_COMPATIBLE_PROVIDERS.index(current_provider) if current_provider in OPENAI_COMPATIBLE_PROVIDERS else 0,
+        key="text_provider_select"
+    )
+
+    model_name_input = st.text_input(
+        tr("Text Model Name"),
+        value=current_model,
+        help="输入完整模型名称\n\n"
+             "常用示例:\n"
+             "• Pro/zai-org/GLM-5\n"
+             "• deepseek/deepseek-chat\n"
+             "• gpt-4o\n"
+             "• deepseek-ai/DeepSeek-R1 (SiliconFlow)\n\n"
+             "支持常见 OpenAI 兼容网关（如 OpenAI/DeepSeek/OpenRouter/SiliconFlow）",
+        key="text_model_input"
+    )
 
     # 组合完整的模型名称
     st_text_model_name = normalize_openai_compatible_model_name(model_name_input)

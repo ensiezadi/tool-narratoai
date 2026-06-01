@@ -28,7 +28,8 @@ def get_tts_engine_options():
         "qwen3_tts": "通义千问 Qwen3 TTS",
         "indextts2": "IndexTTS2 语音克隆",
         "doubaotts": "豆包语音 TTS",
-        "xiaomi_tts": "小米 MiMo TTS"
+        "xiaomi_tts": "小米 MiMo TTS",
+        "minimax_tts": "MiniMax Speech"
     }
 
 
@@ -76,6 +77,12 @@ def get_tts_engine_descriptions():
             "features": "小米语音合成，支持多种音色和情感风格控制，音质优秀",
             "use_case": "需要高质量中文语音合成的用户，支持语音风格细粒度控制",
             "registration": "https://platform.xiaomimimo.com/"
+        },
+        "minimax_tts": {
+            "title": "MiniMax Speech",
+            "features": "MiniMax 语音合成，音质优秀，支持海量音色和超拟真合成",
+            "use_case": "高品质解说、角色扮演、多人解说",
+            "registration": "https://platform.minimaxi.com/"
         }
     }
 
@@ -96,14 +103,21 @@ def is_valid_azure_voice_name(voice_name: str) -> bool:
 
 def render_audio_panel(tr):
     """渲染音频设置面板"""
-    with st.container(border=True):
-        st.write(tr("Audio Settings"))
-
-        # 渲染TTS设置
-        render_tts_settings(tr)
-
-        # 渲染背景音乐设置
-        render_bgm_settings(tr)
+    with st.expander(tr("Audio Settings"), expanded=True):
+        section_options = {
+            "语音合成": "tts",
+            "背景音乐": "bgm",
+        }
+        selected_section_label = st.selectbox(
+            "音频分组",
+            options=list(section_options.keys()),
+            key="audio_settings_section_select",
+            help="每次只显示一组音频设置，避免 TTS、试听和背景音乐混在一起。",
+        )
+        if section_options[selected_section_label] == "tts":
+            render_tts_settings(tr)
+        else:
+            render_bgm_settings(tr)
 
 
 def render_tts_settings(tr):
@@ -138,13 +152,7 @@ def render_tts_settings(tr):
     # 2. 显示引擎详细说明
     if selected_engine in engine_descriptions:
         desc = engine_descriptions[selected_engine]
-
-        with st.expander(f"📋 {desc['title']} 详细说明", expanded=True):
-            st.markdown(f"**特点：** {desc['features']}")
-            st.markdown(f"**适用场景：** {desc['use_case']}")
-
-            if desc['registration']:
-                st.markdown(f"**注册地址：** [{desc['registration']}]({desc['registration']})")
+        st.caption(f"{desc['title']} · {desc['use_case']}")
 
     # 3. 根据选择的引擎渲染对应的配置界面
     # st.subheader("⚙️ 引擎配置")
@@ -165,9 +173,12 @@ def render_tts_settings(tr):
         render_doubaotts_settings(tr)
     elif selected_engine == "xiaomi_tts":
         render_xiaomi_tts_settings(tr)
+    elif selected_engine == "minimax_tts":
+        render_minimax_tts_settings(tr)
 
-    # 4. 试听功能
-    render_voice_preview_new(tr, selected_engine)
+    # 4. 试听功能。MiniMax 有独立试听文本，避免出现两个试听按钮。
+    if selected_engine != "minimax_tts":
+        render_voice_preview_new(tr, selected_engine)
 
 
 def render_edge_tts_settings(tr):
@@ -423,11 +434,11 @@ def render_tencent_tts_settings(tr):
         "ap-singapore",
         "ap-hongkong"
     ]
-    
+
     saved_region = config.tencent.get("region", "ap-beijing")
     if saved_region not in region_options:
         region_options.append(saved_region)
-    
+
     region = st.selectbox(
         "服务地域",
         options=region_options,
@@ -456,23 +467,23 @@ def render_tencent_tts_settings(tr):
         "101017": "智蓉 - 女声",
         "101018": "智靖 - 男声"
     }
-    
+
     saved_voice_type = config.ui.get("tencent_voice_type", "101001")
     if saved_voice_type not in voice_type_options:
         voice_type_options[saved_voice_type] = f"自定义音色 ({saved_voice_type})"
-    
+
     selected_voice_display = st.selectbox(
         "音色选择",
         options=list(voice_type_options.values()),
         index=list(voice_type_options.keys()).index(saved_voice_type),
         help="选择腾讯云 TTS 音色"
     )
-    
+
     # 获取实际的音色ID
     voice_type = list(voice_type_options.keys())[
         list(voice_type_options.values()).index(selected_voice_display)
     ]
-    
+
     # 语速调节
     voice_rate = st.slider(
         "语速调节",
@@ -482,25 +493,25 @@ def render_tencent_tts_settings(tr):
         step=0.1,
         help="调节语音速度 (0.5-2.0)"
     )
-    
+
     config.ui["voice_name"] = saved_voice_type  # 兼容性
-    
+
     # 显示音色说明
     with st.expander("💡 腾讯云 TTS 音色说明", expanded=False):
         st.write("**女声音色：**")
         female_voices = [(k, v) for k, v in voice_type_options.items() if "女声" in v]
         for voice_id, voice_desc in female_voices[:6]:  # 显示前6个
             st.write(f"• {voice_desc} (ID: {voice_id})")
-        
+
         st.write("")
         st.write("**男声音色：**")
         male_voices = [(k, v) for k, v in voice_type_options.items() if "男声" in v]
         for voice_id, voice_desc in male_voices:
             st.write(f"• {voice_desc} (ID: {voice_id})")
-        
+
         st.write("")
         st.info("💡 更多音色请参考腾讯云官方文档")
-    
+
     # 保存配置
     config.tencent["secret_id"] = secret_id
     config.tencent["secret_key"] = secret_key
@@ -545,18 +556,18 @@ def render_qwen3_tts_settings(tr):
         "粤语-阿清": "Kiki",
         "四川-程川": "Eric"
     }
-    
+
     # 显示给用户的中文名称列表
     display_names = list(voice_options.keys())
     saved_voice_param = config.ui.get("qwen_voice_type", "Cherry")
-    
+
     # 如果保存的英文参数不在选项中，查找对应的中文名称
     saved_display_name = "芊悦"  # 默认值
     for chinese_name, english_param in voice_options.items():
         if english_param == saved_voice_param:
             saved_display_name = chinese_name
             break
-    
+
     # 如果保存的音色不在选项中，添加到自定义选项
     if saved_display_name not in display_names:
         display_names.append(saved_display_name)
@@ -568,7 +579,7 @@ def render_qwen3_tts_settings(tr):
         index=display_names.index(saved_display_name) if saved_display_name in display_names else 0,
         help="选择Qwen3 TTS音色"
     )
-    
+
     # 获取对应的英文参数
     voice_type = voice_options.get(selected_display_name, "Cherry")
 
@@ -592,38 +603,43 @@ def render_qwen3_tts_settings(tr):
 def render_indextts2_tts_settings(tr):
     """渲染 IndexTTS2 TTS 设置"""
     import os
-    
+
     # API 地址配置
     api_url = st.text_input(
         "API 地址",
         value=config.indextts2.get("api_url", "http://127.0.0.1:8081/tts"),
         help="IndexTTS2 API 服务地址"
     )
-    
-    # 参考音频文件路径
-    reference_audio = st.text_input(
-        "参考音频路径",
-        value=config.indextts2.get("reference_audio", ""),
-        help="用于语音克隆的参考音频文件路径（WAV 格式，建议 3-10 秒）"
-    )
-    
-    # 文件上传功能
+
+    # 参考音频文件路径 - 统一拖拽上传，已移除冗余文本输入
+    saved_reference = config.indextts2.get("reference_audio", "")
+    if saved_reference and os.path.exists(saved_reference):
+        st.success(f"✅ 已配置参考音频: {saved_reference}")
+    else:
+        st.info("🎙️ 音色克隆模式：请上传参考音频（wav/mp3，建议 3-10 秒）")
+
     uploaded_file = st.file_uploader(
-        "或上传参考音频文件",
+        "上传参考音频（用于克隆音色）",
         type=["wav", "mp3"],
-        help="上传一段清晰的音频用于语音克隆"
+        help="上传一段清晰的音频用于语音克隆",
+        key="indextts2_upload"
     )
-    
+
+    reference_audio = saved_reference
     if uploaded_file is not None:
-        # 保存上传的文件
-        import tempfile
-        temp_dir = tempfile.gettempdir()
-        audio_path = os.path.join(temp_dir, f"indextts2_ref_{uploaded_file.name}")
+        # 建立永久保存目录
+        persist_dir = os.path.join(config.root_dir, "storage", "voice_clones")
+        os.makedirs(persist_dir, exist_ok=True)
+
+        # 使用项目内的持久化路径保存
+        safe_filename = f"indextts2_ref_{os.path.basename(uploaded_file.name)}"
+        audio_path = os.path.join(persist_dir, safe_filename)
+
         with open(audio_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         reference_audio = audio_path
-        st.success(f"✅ 音频已上传: {audio_path}")
-    
+        st.success(f"✅ 参考音频已永久上传并保存: {uploaded_file.name}")
+
     # 推理模式
     infer_mode = st.selectbox(
         "推理模式",
@@ -631,11 +647,11 @@ def render_indextts2_tts_settings(tr):
         index=0 if config.indextts2.get("infer_mode", "普通推理") == "普通推理" else 1,
         help="普通推理质量更高但速度较慢，快速推理速度更快但质量略低"
     )
-    
+
     # 高级参数折叠面板
     with st.expander("🔧 高级参数", expanded=False):
         col1, col2 = st.columns(2)
-        
+
         with col1:
             temperature = st.slider(
                 "采样温度 (Temperature)",
@@ -645,7 +661,7 @@ def render_indextts2_tts_settings(tr):
                 step=0.1,
                 help="控制随机性，值越高输出越随机，值越低越确定"
             )
-            
+
             top_p = st.slider(
                 "Top P",
                 min_value=0.0,
@@ -654,7 +670,7 @@ def render_indextts2_tts_settings(tr):
                 step=0.05,
                 help="nucleus 采样的概率阈值，值越小结果越确定"
             )
-            
+
             top_k = st.slider(
                 "Top K",
                 min_value=0,
@@ -663,7 +679,7 @@ def render_indextts2_tts_settings(tr):
                 step=5,
                 help="top-k 采样的 k 值，0 表示不使用 top-k"
             )
-        
+
         with col2:
             num_beams = st.slider(
                 "束搜索 (Num Beams)",
@@ -673,7 +689,7 @@ def render_indextts2_tts_settings(tr):
                 step=1,
                 help="束搜索的 beam 数量，值越大质量可能越好但速度越慢"
             )
-            
+
             repetition_penalty = st.slider(
                 "重复惩罚 (Repetition Penalty)",
                 min_value=1.0,
@@ -682,29 +698,29 @@ def render_indextts2_tts_settings(tr):
                 step=0.5,
                 help="值越大越能避免重复，但过大可能导致不自然"
             )
-            
+
             do_sample = st.checkbox(
                 "启用采样",
                 value=config.indextts2.get("do_sample", True),
                 help="启用采样可以获得更自然的语音"
             )
-    
+
     # 显示使用说明
     with st.expander("💡 IndexTTS2 使用说明", expanded=False):
         st.markdown("""
         **零样本语音克隆**
-        
+
         1. **准备参考音频**：上传或指定一段清晰的音频文件（建议 3-10 秒）
         2. **设置 API 地址**：确保 IndexTTS2 服务正常运行
         3. **开始合成**：系统会自动使用参考音频的音色合成新语音
-        
+
         **注意事项**：
         - 参考音频质量直接影响合成效果
         - 建议使用无背景噪音的清晰音频
         - 文本长度建议控制在合理范围内
         - 首次合成可能需要较长时间
         """)
-    
+
     # 保存配置
     config.indextts2["api_url"] = api_url
     config.indextts2["reference_audio"] = reference_audio
@@ -715,7 +731,7 @@ def render_indextts2_tts_settings(tr):
     config.indextts2["num_beams"] = num_beams
     config.indextts2["repetition_penalty"] = repetition_penalty
     config.indextts2["do_sample"] = do_sample
-    
+
     # 保存 voice_name 用于兼容性
     if reference_audio:
         config.ui["voice_name"] = f"indextts2:{reference_audio}"
@@ -858,27 +874,27 @@ def render_doubaotts_settings(tr):
         "BV226_streaming": "湖南妹坨",
         "BV216_streaming": "长沙靓女"
     }
-    
+
     saved_voice_type = config.ui.get("doubaotts_voice_type", "BV700_streaming")
     if saved_voice_type not in voice_options:
         voice_options[saved_voice_type] = f"自定义音色 ({saved_voice_type})"
-    
+
     selected_voice_display = st.selectbox(
         "音色选择",
         options=list(voice_options.values()),
         index=list(voice_options.keys()).index(saved_voice_type) if saved_voice_type in voice_options else 0,
         help="选择豆包语音 TTS 音色"
     )
-    
+
     # 获取实际的音色ID
     voice_type = list(voice_options.keys())[
         list(voice_options.values()).index(selected_voice_display)
     ]
-    
+
     # 高级参数折叠面板
     with st.expander("🔧 高级参数", expanded=False):
         col1, col2 = st.columns(2)
-        
+
         with col1:
             # 语速调节
             voice_rate = st.slider(
@@ -889,7 +905,7 @@ def render_doubaotts_settings(tr):
                 step=0.1,
                 help="调节语音速度 (0.2-3.0)"
             )
-            
+
             # 音量调节
             voice_volume = st.slider(
                 "音量调节",
@@ -899,7 +915,7 @@ def render_doubaotts_settings(tr):
                 step=0.1,
                 help="调节语音音量 (0.1-2.0)"
             )
-        
+
         with col2:
             # 音高调节
             voice_pitch = st.slider(
@@ -910,7 +926,7 @@ def render_doubaotts_settings(tr):
                 step=0.1,
                 help="调节语音音高 (0.5-1.5)"
             )
-            
+
             # 句尾静音时长
             silence_duration = st.slider(
                 "句尾静音时长 (秒)",
@@ -920,7 +936,7 @@ def render_doubaotts_settings(tr):
                 step=0.05,
                 help="调节句尾静音时长 (0.0-2.0秒)"
             )
-    
+
     # 显示API Key申请流程
     with st.expander("💡 豆包语音 TTS API Key申请流程", expanded=False):
         st.write("**申请步骤：**")
@@ -930,10 +946,10 @@ def render_doubaotts_settings(tr):
         st.write("4. 点击立即使用")
         st.write("5. 在最左边的API服务中心找到音频生成下面的语音合成（注意：是语音合成，不是语音合成大模型）")
         st.write("6. 翻到最下面获取 APPID 和 Access Token")
-        
+
         st.write("")
         st.info("💡 请将获取到的 Access Key、Secret Key、AppID 和 Token 填写到上方的配置中")
-    
+
     # 保存配置
     config.doubaotts["ak"] = ak
     config.doubaotts["sk"] = sk
@@ -967,7 +983,6 @@ def render_doubaotts_settings(tr):
 
 def render_xiaomi_tts_settings(tr):
     """渲染小米 MiMo TTS 设置"""
-    # API Key 输入
     api_key = st.text_input(
         "API Key",
         value=config.xiaomi.get("api_key", ""),
@@ -975,7 +990,6 @@ def render_xiaomi_tts_settings(tr):
         help="小米语音平台 API Key"
     )
 
-    # 试听文本
     play_content = st.text_area(
         "试听文本",
         value=st.session_state.get('xiaomi_preview_text', "感谢关注 NarratoAI，有任何问题或建议可以联系我们。"),
@@ -984,7 +998,6 @@ def render_xiaomi_tts_settings(tr):
     )
     st.session_state['xiaomi_preview_text'] = play_content
 
-    # 模型选择
     model = st.selectbox(
         "模型",
         options=["mimo-v2.5-tts", "mimo-v2-tts"],
@@ -992,7 +1005,6 @@ def render_xiaomi_tts_settings(tr):
         help="选择小米 TTS 模型"
     )
 
-    # 音色选择
     voice_options = {
         "冰糖": "冰糖 (女声)",
         "茉莉": "茉莉 (女声)",
@@ -1014,16 +1026,13 @@ def render_xiaomi_tts_settings(tr):
         list(voice_options.values()).index(selected_voice_display)
     ]
 
-    # 保存配置
     config.xiaomi["api_key"] = api_key
     config.xiaomi["model"] = model
     config.xiaomi["voice"] = voice
     config.ui["voice_name"] = voice
 
-    # 试听按钮
-    if st.button("🎵 试听", use_container_width=True) and play_content:
+    if st.button("🎵 试听", key="xiaomi_preview_btn", use_container_width=True) and play_content:
         with st.spinner("合成中..."):
-            import uuid
             from app.services import voice as voice_service
             temp_dir = utils.storage_dir("temp", create=True)
             audio_file = os.path.join(temp_dir, f"xiaomi-tts-{uuid4()}.wav")
@@ -1036,9 +1045,98 @@ def render_xiaomi_tts_settings(tr):
             else:
                 st.error("合成失败，请检查日志")
 
-    # 显示配置状态
     if api_key:
         st.success("✅ 小米 MiMo TTS 配置已设置")
+    else:
+        st.warning("⚠️ 请配置 API Key")
+
+
+def render_minimax_tts_settings(tr):
+    """渲染 MiniMax Speech TTS 设置"""
+    # 音色选择 (内置音色)
+    voice_options = {
+        "male-qn-qingse": "青涩男声 (male-qn-qingse)",
+        "male-qn-jingying": "精英男声 (male-qn-jingying)",
+        "male-qn-badao": "霸道总裁 (male-qn-badao)",
+        "male-qn-daxiong": "温暖大叔 (male-qn-daxiong)",
+        "female-qn-shuanglang": "爽朗女声 (female-qn-shuanglang)",
+        "female-qn-ruoya": "优雅女声 (female-qn-ruoya)",
+        "female-qn-tiandao": "甜美少女 (female-qn-tiandao)",
+        "female-qn-dajie": "成熟女声 (female-qn-dajie)",
+        "female-shaonian": "活泼少年 (female-shaonian)",
+        "presenter": "新闻播音 (presenter)",
+        "audiobook": "故事说书 (audiobook)",
+    }
+
+    saved_voice = config.minimax.get("voice", "male-qn-qingse")
+
+    # 允许选择或自定义
+    use_custom_voice = st.checkbox(
+        "使用自定义音色 ID (克隆音色)",
+        value=saved_voice not in voice_options,
+        help="勾选后可手动输入您在 MiniMax 控制台创建的克隆音色 ID"
+    )
+
+    if use_custom_voice:
+        voice = st.text_input(
+            "自定义音色 ID",
+            value=saved_voice,
+            placeholder="例如: speech-xxxxx 或 db_xxxxx",
+            help="输入 MiniMax 克隆音色 ID"
+        )
+    else:
+        selected_voice_display = st.selectbox(
+            "内置音色",
+            options=list(voice_options.values()),
+            index=list(voice_options.keys()).index(saved_voice) if saved_voice in voice_options else 0,
+            help="选择 MiniMax TTS 预置音色"
+        )
+        voice = list(voice_options.keys())[
+            list(voice_options.values()).index(selected_voice_display)
+        ]
+
+    with st.expander("凭据与试听文本", expanded=False):
+        # API Key 输入
+        api_key = st.text_input(
+            "API Key",
+            value=config.minimax.get("api_key", "") or os.getenv("MINIMAX_API_KEY", ""),
+            type="password",
+            help="MiniMax 开放平台 API Key"
+        )
+
+        # 试听文本
+        play_content = st.text_area(
+            "试听文本",
+            value=st.session_state.get('minimax_preview_text', "感谢使用 NarratoAI，这是 MiniMax 的高保真超拟真语音合成效果。"),
+            height=80,
+            key="minimax_preview_text_input"
+        )
+        st.session_state['minimax_preview_text'] = play_content
+
+    # 保存配置
+    config.minimax["api_key"] = api_key
+    config.minimax["voice"] = voice
+    config.ui["voice_name"] = voice
+
+    # 试听按钮
+    if st.button("🎵 试听", key="minimax_preview_btn", use_container_width=True) and play_content:
+        with st.spinner("合成中..."):
+            from app.services import voice as voice_service
+            temp_dir = utils.storage_dir("temp", create=True)
+            audio_file = os.path.join(temp_dir, f"minimax-tts-{uuid4()}.mp3")
+
+            sub_maker = voice_service.minimax_tts(play_content, voice, audio_file, 1.0)
+            if sub_maker and os.path.exists(audio_file):
+                st.success("合成成功！")
+                with open(audio_file, 'rb') as f:
+                    st.audio(f.read(), format='audio/mp3')
+                os.remove(audio_file)
+            else:
+                st.error("合成失败，请检查日志与 API Key 是否正确配置")
+
+    # 显示配置状态
+    if api_key:
+        st.success("✅ MiniMax Speech 配置已设置")
     else:
         st.warning("⚠️ 请配置 API Key")
 
@@ -1253,9 +1351,16 @@ def render_bgm_settings(tr):
         (tr("Custom Background Music"), "custom"),
     ]
 
+    saved_bgm_type = st.session_state.get('bgm_type', 'random')
+    selected_bgm_index = 1
+    for i, (_, value) in enumerate(bgm_options):
+        if value == saved_bgm_type:
+            selected_bgm_index = i
+            break
+
     selected_index = st.selectbox(
         tr("Background Music"),
-        index=1,
+        index=selected_bgm_index,
         options=range(len(bgm_options)),
         format_func=lambda x: bgm_options[x][0],
     )
@@ -1275,7 +1380,7 @@ def render_bgm_settings(tr):
         tr("Background Music Volume"),
         min_value=AudioVolumeDefaults.MIN_VOLUME,
         max_value=AudioVolumeDefaults.MAX_VOLUME,
-        value=AudioVolumeDefaults.BGM_VOLUME,
+        value=st.session_state.get('bgm_volume', AudioVolumeDefaults.BGM_VOLUME),
         step=0.01,
         help=tr("Adjust the volume of the original audio")
     )

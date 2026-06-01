@@ -2,6 +2,7 @@ import os
 import socket
 import toml
 import shutil
+from copy import deepcopy
 from loguru import logger
 
 from app.config.defaults import build_default_app_config, merge_missing_app_defaults
@@ -9,6 +10,31 @@ from app.config.defaults import build_default_app_config, merge_missing_app_defa
 root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 config_file = f"{root_dir}/config.toml"
 version_file = f"{root_dir}/project_version"
+
+SECRET_ENV_OVERRIDES = {
+    ("app", "vision_gemini_api_key"): "NARRATOAI_VISION_GEMINI_API_KEY",
+    ("app", "vision_openai_api_key"): "NARRATOAI_VISION_OPENAI_API_KEY",
+    ("app", "vision_kaggle_api_key"): "NARRATOAI_VISION_KAGGLE_API_KEY",
+    ("app", "text_openai_api_key"): "NARRATOAI_TEXT_OPENAI_API_KEY",
+    ("app", "agent_gateway_api_key"): "NARRATOAI_AGENT_GATEWAY_API_KEY",
+    ("alist", "url"): "NARRATOAI_ALIST_URL",
+    ("alist", "username"): "NARRATOAI_ALIST_USERNAME",
+    ("alist", "password"): "NARRATOAI_ALIST_PASSWORD",
+    ("alist", "base_path"): "NARRATOAI_ALIST_BASE_PATH",
+    ("azure", "speech_key"): "NARRATOAI_AZURE_SPEECH_KEY",
+    ("azure", "speech_region"): "NARRATOAI_AZURE_SPEECH_REGION",
+    ("tencent", "secret_id"): "NARRATOAI_TENCENT_SECRET_ID",
+    ("tencent", "secret_key"): "NARRATOAI_TENCENT_SECRET_KEY",
+    ("soulvoice", "api_key"): "NARRATOAI_SOULVOICE_API_KEY",
+    ("tts_qwen", "api_key"): "NARRATOAI_TTS_QWEN_API_KEY",
+    ("fun_asr", "api_key"): "NARRATOAI_FUN_ASR_API_KEY",
+    ("doubaotts", "ak"): "NARRATOAI_DOUBAOTTS_AK",
+    ("doubaotts", "sk"): "NARRATOAI_DOUBAOTTS_SK",
+    ("doubaotts", "appid"): "NARRATOAI_DOUBAOTTS_APPID",
+    ("doubaotts", "token"): "NARRATOAI_DOUBAOTTS_TOKEN",
+    ("xiaomi", "api_key"): "NARRATOAI_XIAOMI_API_KEY",
+    ("minimax", "api_key"): "NARRATOAI_MINIMAX_API_KEY",
+}
 
 
 def get_version_from_file():
@@ -39,6 +65,35 @@ def load_config():
     _config_ = load_toml_file(config_file)
     _config_["app"] = merge_missing_app_defaults(_config_.get("app", {}))
     return _config_
+
+
+def apply_secret_env_overrides(config_data):
+    """Overlay secrets from environment variables without persisting them."""
+    applied = set()
+    for (section, key), env_name in SECRET_ENV_OVERRIDES.items():
+        env_value = os.getenv(env_name)
+        if env_value is None:
+            continue
+        config_data.setdefault(section, {})[key] = env_value
+        applied.add((section, key))
+
+    if applied:
+        logger.info(f"loaded {len(applied)} secret config value(s) from environment")
+    return applied
+
+
+def build_persistable_config(config_data):
+    """Return config data suitable for config.toml, excluding env-only secrets."""
+    persistable = deepcopy(config_data)
+    for section, key in _env_secret_override_paths:
+        env_name = SECRET_ENV_OVERRIDES[(section, key)]
+        env_value = os.getenv(env_name)
+        if env_value is None:
+            continue
+        section_data = persistable.get(section)
+        if isinstance(section_data, dict) and section_data.get(key) == env_value:
+            section_data[key] = _cfg_from_file.get(section, {}).get(key, "")
+    return persistable
 
 
 def load_toml_file(file_path):
@@ -85,10 +140,14 @@ def save_config():
         _cfg["indextts2"] = indextts2
         _cfg["doubaotts"] = doubaotts
         _cfg["xiaomi"] = xiaomi
-        f.write(toml.dumps(_cfg))
+        _cfg["minimax"] = minimax
+        _cfg["alist"] = alist
+        f.write(toml.dumps(build_persistable_config(_cfg)))
 
 
 _cfg = load_config()
+_cfg_from_file = deepcopy(_cfg)
+_env_secret_override_paths = apply_secret_env_overrides(_cfg)
 app = _cfg.get("app", {})
 whisper = _cfg.get("whisper", {})
 proxy = _cfg.get("proxy", {})
@@ -102,6 +161,8 @@ fun_asr = _cfg.get("fun_asr", {})
 indextts2 = _cfg.get("indextts2", {})
 doubaotts = _cfg.get("doubaotts", {})
 xiaomi = _cfg.get("xiaomi", {})
+minimax = _cfg.get("minimax", {})
+alist = _cfg.get("alist", {})
 
 hostname = socket.gethostname()
 

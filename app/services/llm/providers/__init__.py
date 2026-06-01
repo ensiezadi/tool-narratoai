@@ -12,17 +12,23 @@ def register_all_providers():
     """
     注册所有提供商
 
-    当前实现：只注册 OpenAI 兼容统一接口
+    当前实现：注册 OpenAI 兼容接口、Gemini 原生接口和 Kaggle 离线视觉接口
     """
     # 在函数内部导入，避免循环依赖
     from ..manager import LLMServiceManager
     from loguru import logger
 
-    # 只导入 OpenAI 兼容 provider
+    # 导入 OpenAI 兼容 provider
     from ..openai_compatible_provider import (
         OpenAICompatibleVisionProvider,
         OpenAICompatibleTextProvider,
     )
+
+    # 导入 Gemini 原生 provider
+    from ..gemini_provider import GeminiVisionProvider
+
+    # 导入 Kaggle provider
+    from ..kaggle_provider import KaggleVisionProvider
 
     logger.info("🔧 开始注册 LLM 提供商...")
 
@@ -30,7 +36,15 @@ def register_all_providers():
     LLMServiceManager.register_vision_provider('openai', OpenAICompatibleVisionProvider)
     LLMServiceManager.register_text_provider('openai', OpenAICompatibleTextProvider)
 
+    # ===== 注册 Gemini 原生接口 =====
+    LLMServiceManager.register_vision_provider('gemini', GeminiVisionProvider)
+
+    # ===== 注册 Kaggle 接口 =====
+    LLMServiceManager.register_vision_provider('kaggle', KaggleVisionProvider)
+
     logger.info("✅ OpenAI 兼容提供商注册完成")
+    logger.info("✅ Gemini 原生提供商注册完成")
+    logger.info("✅ Kaggle 提供商注册完成")
 
 
 # 导出注册函数

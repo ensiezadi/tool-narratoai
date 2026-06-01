@@ -4,9 +4,10 @@ import sys
 import time
 from loguru import logger
 from app.config import config
-from webui.components import basic_settings, video_settings, audio_settings, subtitle_settings, script_settings, \
-    system_settings
-# from webui.utils import cache, file_utils
+from webui.components import (
+    basic_settings, video_settings, audio_settings, subtitle_settings,
+    script_settings, system_settings, task_monitor
+)
 from app.utils import utils
 from app.utils import ffmpeg_utils
 from app.models.schema import VideoClipParams, VideoAspect
@@ -27,7 +28,178 @@ st.set_page_config(
 
 # 设置页面样式
 hide_streamlit_style = """
-<style>#root > div:nth-child(1) > div > div > div > div > section > div {padding-top: 2rem; padding-bottom: 10px; padding-left: 20px; padding-right: 20px;}</style>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
+
+/* Main app background & typography */
+.stApp {
+    font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+    background-color: #0B0E14 !important;
+    color: #E2E8F0 !important;
+}
+
+#root > div:nth-child(1) > div > div > div > div > section > div {
+    padding-top: 1.5rem;
+    padding-bottom: 10px;
+    padding-left: 30px;
+    padding-right: 30px;
+}
+
+/* Hide streamlit default headers and footers */
+header {visibility: hidden;}
+footer {visibility: hidden;}
+
+/* Custom premium header styling */
+.narrato-header-container {
+    background: linear-gradient(135deg, rgba(30, 41, 59, 0.45) 0%, rgba(15, 23, 42, 0.65) 100%);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin-bottom: 18px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+
+.narrato-header-title {
+    font-size: 2rem;
+    font-weight: 700;
+    margin-bottom: 2px;
+    background: linear-gradient(90deg, #38BDF8 0%, #818CF8 50%, #C084FC 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow: 0 0 50px rgba(129, 140, 248, 0.25);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.narrato-header-subtitle {
+    font-size: 0.9rem;
+    color: #94A3B8;
+    letter-spacing: 0;
+}
+
+.narrato-inline-status {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 6px 0 14px;
+}
+
+.narrato-inline-status span {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 4px 10px;
+    border-radius: 8px;
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(56, 189, 248, 0.22);
+    color: #CBD5E1;
+    font-size: 0.86rem;
+}
+
+/* Premium Card style for each setting panel */
+div[data-testid="stVerticalBlock"] > div[style*="flex-direction: column"] {
+    background: rgba(17, 24, 39, 0.45) !important;
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-radius: 14px !important;
+    padding: 20px !important;
+    margin-bottom: 20px !important;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2) !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+div[data-testid="stVerticalBlock"] > div[style*="flex-direction: column"]:hover {
+    border-color: rgba(129, 140, 248, 0.35) !important;
+    box-shadow: 0 12px 40px rgba(129, 140, 248, 0.12) !important;
+    transform: translateY(-2px) !important;
+}
+
+/* Beautiful style for expanders */
+div[data-testid="stExpander"] {
+    background: rgba(30, 41, 59, 0.25) !important;
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-radius: 12px !important;
+    margin-bottom: 14px !important;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.12) !important;
+    transition: all 0.2s ease !important;
+}
+
+div[data-testid="stExpander"]:hover {
+    border-color: rgba(56, 189, 248, 0.3) !important;
+}
+
+/* Form headers and titles styling */
+h1, h2, h3 {
+    font-family: 'Outfit', sans-serif !important;
+    color: #FFFFFF !important;
+    font-weight: 600 !important;
+}
+
+h3 {
+    border-bottom: 2px solid rgba(129, 140, 248, 0.2) !important;
+    padding-bottom: 8px !important;
+    margin-bottom: 16px !important;
+}
+
+/* Input, Select & Widgets styling */
+div[data-baseweb="select"], div[data-baseweb="input"], .stTextArea textarea {
+    background-color: rgba(15, 23, 42, 0.6) !important;
+    border-radius: 10px !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    color: #E2E8F0 !important;
+    transition: all 0.2s ease !important;
+}
+
+div[data-baseweb="select"]:hover, div[data-baseweb="input"]:hover, .stTextArea textarea:hover {
+    border-color: rgba(56, 189, 248, 0.45) !important;
+}
+
+/* Primary generate button */
+button[data-testid="baseButton-primary"] {
+    background: linear-gradient(135deg, #6366F1 0%, #4F46E5 100%) !important;
+    color: #FFFFFF !important;
+    border: none !important;
+    border-radius: 12px !important;
+    font-weight: 600 !important;
+    font-size: 1.1rem !important;
+    padding: 16px 32px !important;
+    box-shadow: 0 6px 20px rgba(79, 70, 229, 0.4) !important;
+    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
+    text-transform: uppercase !important;
+    letter-spacing: 1px !important;
+    width: 100% !important;
+    cursor: pointer !important;
+}
+
+button[data-testid="baseButton-primary"]:hover {
+    transform: scale(1.02) !important;
+    box-shadow: 0 8px 25px rgba(79, 70, 229, 0.6) !important;
+    background: linear-gradient(135deg, #818CF8 0%, #6366F1 100%) !important;
+}
+
+/* Secondary export button */
+button[data-testid="baseButton-secondary"] {
+    background: rgba(30, 41, 59, 0.65) !important;
+    color: #E2E8F0 !important;
+    border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    border-radius: 12px !important;
+    font-weight: 600 !important;
+    font-size: 1.1rem !important;
+    padding: 16px 32px !important;
+    transition: all 0.3s ease !important;
+    width: 100% !important;
+    backdrop-filter: blur(6px);
+}
+
+button[data-testid="baseButton-secondary"]:hover {
+    background: rgba(30, 41, 59, 0.95) !important;
+    border-color: rgba(129, 140, 248, 0.5) !important;
+    color: #FFFFFF !important;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25) !important;
+}
+</style>
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
@@ -118,6 +290,67 @@ def init_global_state():
     if 'ui_language' not in st.session_state:
         st.session_state['ui_language'] = config.ui.get("language", utils.get_system_locale())
     # 移除subclip_videos初始化 - 现在使用统一裁剪策略
+    prefill_session_from_query_params()
+
+
+def _resolve_prefill_path(path: str) -> str:
+    if not path:
+        return ""
+    expanded_path = os.path.expanduser(path)
+    if os.path.isabs(expanded_path):
+        return expanded_path
+    return os.path.abspath(os.path.join(config.root_dir, expanded_path))
+
+
+def prefill_session_from_query_params():
+    """允许通过 URL 参数预填脚本和视频，便于从前端复现任务。"""
+    query_params = getattr(st, "query_params", {})
+    prefill_map = {
+        "script": "video_clip_json_path",
+        "video": "video_origin_path",
+    }
+
+    for query_key, state_key in prefill_map.items():
+        if st.session_state.get(state_key):
+            continue
+        value = query_params.get(query_key) if hasattr(query_params, "get") else None
+        if isinstance(value, list):
+            value = value[0] if value else ""
+        resolved_path = _resolve_prefill_path(value)
+        if resolved_path and os.path.exists(resolved_path):
+            st.session_state[state_key] = resolved_path
+
+    aspect = query_params.get("aspect") if hasattr(query_params, "get") else None
+    if isinstance(aspect, list):
+        aspect = aspect[0] if aspect else ""
+    if aspect in {VideoAspect.landscape.value, VideoAspect.portrait.value}:
+        st.session_state.setdefault("video_aspect", aspect)
+
+    subtitle = query_params.get("subtitle") if hasattr(query_params, "get") else None
+    if isinstance(subtitle, list):
+        subtitle = subtitle[0] if subtitle else ""
+    if subtitle is not None and "subtitle_enabled" not in st.session_state:
+        st.session_state["subtitle_enabled"] = str(subtitle).lower() not in {"0", "false", "no", "off"}
+
+    bgm_type = query_params.get("bgm") if hasattr(query_params, "get") else None
+    if isinstance(bgm_type, list):
+        bgm_type = bgm_type[0] if bgm_type else ""
+    if bgm_type in {"none", "random", "custom"} and "bgm_type" not in st.session_state:
+        st.session_state["bgm_type"] = "" if bgm_type == "none" else bgm_type
+
+    for query_key, state_key in {
+        "original_volume": "original_volume",
+        "bgm_volume": "bgm_volume",
+        "tts_volume": "tts_volume",
+    }.items():
+        value = query_params.get(query_key) if hasattr(query_params, "get") else None
+        if isinstance(value, list):
+            value = value[0] if value else ""
+        if value is not None and state_key not in st.session_state:
+            try:
+                st.session_state[state_key] = float(value)
+            except (TypeError, ValueError):
+                pass
 
 
 def tr(key):
@@ -389,7 +622,11 @@ def main():
     hwaccel_info = ffmpeg_utils.detect_hardware_acceleration()
     if not st.session_state['hwaccel_logged']:
         if hwaccel_info["available"]:
-            logger.info(f"FFmpeg硬件加速检测结果: 可用 | 类型: {hwaccel_info['type']} | 编码器: {hwaccel_info['encoder']} | 独立显卡: {hwaccel_info['is_dedicated_gpu']}")
+            logger.info(
+                "FFmpeg硬件加速检测结果: "
+                f"可用 | 类型: {hwaccel_info['type']} | 编码器: {hwaccel_info['encoder']} "
+                f"| GPU类型: {hwaccel_info.get('gpu_kind') or ('独立GPU' if hwaccel_info.get('is_dedicated_gpu') else '集成/内建GPU')}"
+            )
         else:
             logger.warning(f"FFmpeg硬件加速不可用: {hwaccel_info['message']}, 将使用CPU软件编码")
         st.session_state['hwaccel_logged'] = True
@@ -401,31 +638,34 @@ def main():
     except Exception as e:
         logger.warning(f"资源初始化时出现警告: {e}")
 
-    st.title(f"Narrato:blue[AI]:sunglasses: 📽️")
-    st.write(tr("Get Help"))
+    # Custom Premium Header Card
+    header_html = """
+    <div class="narrato-header-container">
+        <div class="narrato-header-title">📽️ NarratoAI</div>
+        <div class="narrato-header-subtitle">多模态智能解说与视频生成管线 • AI-powered video storytelling and montage automation pipeline</div>
+    </div>
+    """
+    st.markdown(header_html, unsafe_allow_html=True)
 
-    # 首先渲染不依赖PyTorch的UI部分
-    # 渲染基础设置面板
-    basic_settings.render_basic_settings(tr)
+    # 主内容
+    left_col, right_col = st.columns([2, 1], gap="medium")
 
-    # 渲染主面板
-    panel = st.columns(3)
-    with panel[0]:
+    with left_col:
         script_settings.render_script_panel(tr)
-    with panel[1]:
         audio_settings.render_audio_panel(tr)
-    with panel[2]:
+
+    with right_col:
         video_settings.render_video_panel(tr)
         subtitle_settings.render_subtitle_panel(tr)
-
-    # 放到最后渲染可能使用PyTorch的部分
-    # 渲染系统设置面板
-    with panel[2]:
         system_settings.render_system_panel(tr)
+        basic_settings.render_basic_settings(tr)
 
-    # 放到最后渲染生成按钮和处理逻辑
-    render_generate_button()
-    render_export_jianying_button()
+    # 底部操作按钮
+    col_btn1, col_btn2 = st.columns([1, 1], gap="medium")
+    with col_btn1:
+        render_generate_button()
+    with col_btn2:
+        render_export_jianying_button()
 
 
 if __name__ == "__main__":

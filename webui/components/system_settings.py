@@ -30,16 +30,28 @@ def clear_directory(dir_path, tr):
 def render_system_panel(tr):
     """渲染系统设置面板"""
     with st.expander(tr("System settings"), expanded=False):
+        targets = {
+            tr("Clear frames"): os.path.join(storage_dir(), "temp/keyframes"),
+            tr("Clear clip videos"): os.path.join(storage_dir(), "temp/clip_video"),
+            tr("Clear tasks"): os.path.join(storage_dir(), "tasks"),
+        }
+        st.caption("清理本地缓存目录，不会删除 resource/videos 或 resource/scripts。")
+        confirm_clear = st.checkbox("确认要清理缓存目录", key="confirm_clear_system_cache")
+
         col1, col2, col3 = st.columns(3)
                 
         with col1:
-            if st.button(tr("Clear frames"), use_container_width=True):
-                clear_directory(os.path.join(storage_dir(), "temp/keyframes"), tr)
+            if st.button(tr("Clear frames"), use_container_width=True, disabled=not confirm_clear):
+                clear_directory(targets[tr("Clear frames")], tr)
                 
         with col2:
-            if st.button(tr("Clear clip videos"), use_container_width=True):
-                clear_directory(os.path.join(storage_dir(), "temp/clip_video"), tr)
+            if st.button(tr("Clear clip videos"), use_container_width=True, disabled=not confirm_clear):
+                clear_directory(targets[tr("Clear clip videos")], tr)
                 
         with col3:
-            if st.button(tr("Clear tasks"), use_container_width=True):
-                clear_directory(os.path.join(storage_dir(), "tasks"), tr)
+            if st.button(tr("Clear tasks"), use_container_width=True, disabled=not confirm_clear):
+                clear_directory(targets[tr("Clear tasks")], tr)
+
+        with st.expander("清理目标路径", expanded=False):
+            for label, target_path in targets.items():
+                st.code(f"{label}: {target_path}", language="text")

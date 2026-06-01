@@ -1,6 +1,7 @@
 import os
 import glob
 import json
+import re
 import time
 import traceback
 import streamlit as st
@@ -8,18 +9,23 @@ from loguru import logger
 
 from app.config import config
 from app.models.schema import VideoClipParams
+from app.services.documentary.frame_analysis_service import DocumentaryFrameAnalysisService
+from app.services.kaggle_video_understanding_service import KaggleVideoUnderstandingService
 from app.services.subtitle_text import decode_subtitle_bytes
 from app.utils import utils, check_script
 from webui.tools.generate_script_docu import generate_script_docu
 from webui.tools.generate_script_short import generate_script_short
 from webui.tools.generate_short_summary import generate_script_short_sunmmary
+from webui.tools.generate_script_gaming import generate_script_gaming
+from webui.components.alist_file_browser import AlistClient
 
 
 def render_script_panel(tr):
     """渲染脚本配置面板"""
-    with st.container(border=True):
-        st.write(tr("Video Script Configuration"))
+    with st.expander(tr("Video Script Configuration"), expanded=True):
         params = VideoClipParams()
+
+        render_highlight_quick_picker()
 
         # 渲染脚本文件选择
         render_script_file(tr, params)
@@ -40,12 +46,125 @@ def render_script_panel(tr):
         elif script_path == "summary":
             # 短剧解说
             short_drama_summary(tr)
+        elif script_path == "gaming":
+            # 游戏解说
+            render_gaming_details(tr)
         else:
             # 默认为空
             pass
 
         # 渲染脚本操作按钮
         render_script_buttons(tr, params)
+
+
+def render_highlight_quick_picker():
+    """Render paired local script/video choices for benchmark highlight editing."""
+    pairs = discover_highlight_pairs()
+    if not pairs:
+        return
+
+    options = [{"label": "不使用快捷选择", "script": "", "video": "", "summary": ""}, *pairs]
+    current_script = st.session_state.get("video_clip_json_path", "")
+    current_video = st.session_state.get("video_origin_path", "")
+    selected_index = 0
+    for index, option in enumerate(options):
+        if option["script"] == current_script and option["video"] == current_video:
+            selected_index = index
+            break
+
+    selected_pair_index = st.selectbox(
+        "快速选择剪辑任务",
+        options=range(len(options)),
+        index=selected_index,
+        format_func=lambda index: options[index]["label"],
+        key="highlight_quick_pair_selection",
+        help="本地脚本和视频已配对时，可一次性填入两个路径。",
+    )
+    selected = options[selected_pair_index]
+    if selected["script"] and selected["video"]:
+        st.session_state["video_clip_json_path"] = selected["script"]
+        st.session_state["video_origin_path"] = selected["video"]
+        st.caption(selected["summary"])
+
+    render_script_video_status()
+
+
+def render_script_video_status():
+    """Show compact readiness status for the two required inputs."""
+    script_path = st.session_state.get("video_clip_json_path", "")
+    video_path = st.session_state.get("video_origin_path", "")
+    script_ok = bool(script_path and os.path.exists(script_path))
+    video_ok = bool(video_path and os.path.exists(video_path))
+    script_label = os.path.basename(script_path) if script_ok else "未选择"
+    video_label = os.path.basename(video_path) if video_ok else "未选择"
+    st.markdown(
+        (
+            "<div class='narrato-inline-status'>"
+            f"<span>脚本 {'✓' if script_ok else '✗'} {script_label}</span>"
+            f"<span>视频 {'✓' if video_ok else '✗'} {video_label}</span>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def discover_highlight_pairs() -> list[dict[str, str]]:
+    """Pair local benchmark scripts with local videos by part id or file stem."""
+    script_dir = utils.script_dir()
+    video_dir = utils.video_dir()
+    script_files = sorted(
+        glob.glob(os.path.join(script_dir, "*.json")),
+        key=os.path.getctime,
+        reverse=True,
+    )
+    video_files = []
+    for suffix in ["*.mp4", "*.mov", "*.avi", "*.mkv"]:
+        video_files.extend(glob.glob(os.path.join(video_dir, suffix)))
+    video_files = sorted(video_files, key=os.path.getctime, reverse=True)
+
+    videos_by_key: dict[str, str] = {}
+    for video in video_files:
+        stem = os.path.splitext(os.path.basename(video))[0].lower()
+        videos_by_key.setdefault(stem, video)
+        part_key = extract_part_key(stem)
+        if part_key:
+            if stem == part_key:
+                videos_by_key[part_key] = video
+            else:
+                videos_by_key.setdefault(part_key, video)
+
+    pairs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for script in script_files:
+        script_stem = os.path.splitext(os.path.basename(script))[0].lower()
+        keys = [script_stem]
+        part_key = extract_part_key(script_stem)
+        if part_key:
+            keys.insert(0, part_key)
+        video = next((videos_by_key[key] for key in keys if key in videos_by_key), "")
+        if not video:
+            continue
+        dedupe_key = (script, video)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        label_key = part_key or os.path.splitext(os.path.basename(video))[0]
+        script_rel = script.replace(config.root_dir, "")
+        video_rel = video.replace(config.root_dir, "")
+        pairs.append(
+            {
+                "label": f"{label_key} · {os.path.basename(script)} + {os.path.basename(video)}",
+                "script": script,
+                "video": video,
+                "summary": f"已配对：{script_rel} / {video_rel}",
+            }
+        )
+    return pairs[:8]
+
+
+def extract_part_key(value: str) -> str:
+    match = re.search(r"(part\d+)", value, flags=re.IGNORECASE)
+    return match.group(1).lower() if match else ""
 
 
 def render_script_file(tr, params):
@@ -55,6 +174,7 @@ def render_script_file(tr, params):
     MODE_AUTO = "auto"
     MODE_SHORT = "short"
     MODE_SUMMARY = "summary"
+    MODE_GAMING = "gaming"
 
     # 处理保存脚本后的模式切换（必须在 widget 实例化之前）
     if st.session_state.get('_switch_to_file_mode'):
@@ -67,28 +187,31 @@ def render_script_file(tr, params):
         tr("Auto Generate"): MODE_AUTO,
         tr("Short Generate"): MODE_SHORT,
         tr("Short Drama Summary"): MODE_SUMMARY,
+        tr("Gaming Commentary"): MODE_GAMING,
     }
-    
+
     # 获取当前状态
     current_path = st.session_state.get('video_clip_json_path', '')
-    
+
     # 确定当前选中的模式索引
     default_index = 0
     mode_keys = list(mode_options.keys())
-    
+
     if current_path == "auto":
         default_index = mode_keys.index(tr("Auto Generate"))
     elif current_path == "short":
         default_index = mode_keys.index(tr("Short Generate"))
     elif current_path == "summary":
         default_index = mode_keys.index(tr("Short Drama Summary"))
+    elif current_path == "gaming":
+        default_index = mode_keys.index(tr("Gaming Commentary"))
     else:
         default_index = mode_keys.index(tr("Select/Upload Script"))
 
     # 1. 渲染功能选择下拉框
     # 使用 segmented_control 替代 selectbox，提供更好的视觉体验
     default_mode_label = mode_keys[default_index]
-    
+
     # 定义回调函数来处理状态更新
     def update_script_mode():
         # 获取当前选中的标签
@@ -111,11 +234,11 @@ def render_script_file(tr, params):
         key="script_mode_selection",
         on_change=update_script_mode
     )
-    
+
     # 处理未选择的情况（虽然有default，但在某些交互下可能为空）
     if not selected_mode_label:
         selected_mode_label = default_mode_label
-        
+
     selected_mode = mode_options[selected_mode_label]
 
     # 2. 根据选择的模式处理逻辑
@@ -147,7 +270,7 @@ def render_script_file(tr, params):
         # 找到保存的脚本文件在列表中的索引
         # 如果当前path是特殊值(auto/short/summary)，则重置为空
         saved_script_path = current_path if current_path not in [MODE_AUTO, MODE_SHORT, MODE_SUMMARY] else ""
-        
+
         selected_index = 0
         for i, (_, path) in enumerate(script_list):
             if path == saved_script_path:
@@ -224,20 +347,56 @@ def render_script_file(tr, params):
 
 def render_video_file(tr, params):
     """渲染视频文件选择"""
-    video_list = [(tr("None"), ""), (tr("Upload Local Files"), "upload_local")]
+    video_list = [
+        (tr("None"), ""),
+        (tr("Upload Local Files"), "upload_local"),
+    ]
 
     # 获取已有视频文件
+    local_video_files = []
     for suffix in ["*.mp4", "*.mov", "*.avi", "*.mkv"]:
-        video_files = glob.glob(os.path.join(utils.video_dir(), suffix))
-        for file in video_files:
-            display_name = file.replace(config.root_dir, "")
-            video_list.append((display_name, file))
+        local_video_files.extend(glob.glob(os.path.join(utils.video_dir(), suffix)))
+    local_video_files.sort(
+        key=lambda path: (
+            extract_part_key(os.path.splitext(os.path.basename(path))[0].lower())
+            == os.path.splitext(os.path.basename(path))[0].lower(),
+            os.path.getctime(path),
+        ),
+        reverse=True,
+    )
+    for file in local_video_files:
+        display_name = file.replace(config.root_dir, "")
+        video_list.append((display_name, file))
+    video_list.append(("📁 从 Alist 选择", "alist"))
+
+    saved_video_path = st.session_state.get('video_origin_path', '')
+
+    # 默认优先本地视频，避免大文件场景误展开 Alist 选择器
+    default_value = local_video_files[0] if local_video_files else ""
+    selected_index = 0
+    for i, (_, path) in enumerate(video_list):
+        if path == default_value:
+            selected_index = i
+            break
+
+    if saved_video_path:
+        for i, (_, path) in enumerate(video_list):
+            if path == saved_video_path:
+                selected_index = i
+                break
+            try:
+                if path and os.path.abspath(path) == os.path.abspath(saved_video_path):
+                    selected_index = i
+                    break
+            except Exception:
+                pass
 
     selected_video_index = st.selectbox(
         tr("Video File"),
-        index=0,
+        index=selected_index,
         options=range(len(video_list)),
-        format_func=lambda x: video_list[x][0]
+        format_func=lambda x: video_list[x][0],
+        key="video_file_selection",
     )
 
     video_path = video_list[selected_video_index][1]
@@ -268,6 +427,40 @@ def render_video_file(tr, params):
                 params.video_origin_path = video_file_path
                 time.sleep(1)
                 st.rerun()
+
+    elif video_path == "alist":
+        # 从 Alist 选择文件
+        from webui.components.alist_file_browser import render_alist_file_browser
+
+        with st.expander("🌐 Alist 文件选择器", expanded=False):
+            selected_file, selected_path = render_alist_file_browser()
+
+            if selected_file and selected_path:
+                # 获取 Alist 配置
+                alist_url = st.session_state.get('alist_url', config.alist.get('url', ''))
+                alist_username = st.session_state.get('alist_username', config.alist.get('username', ''))
+                alist_password = st.session_state.get('alist_password', config.alist.get('password', ''))
+
+                if alist_url and alist_username and alist_password:
+                    client = AlistClient(alist_url, alist_username, alist_password)
+
+                    with st.spinner(f"正在从 Alist 下载 {selected_file}..."):
+                        file_content = client.download_file(selected_path)
+
+                        if file_content:
+                            # 保存到本地
+                            video_file_path = os.path.join(utils.video_dir(), selected_file)
+
+                            with open(video_file_path, "wb") as f:
+                                f.write(file_content)
+
+                            st.success(f"✅ 成功从 Alist 下载: {selected_file}")
+                            st.session_state['video_origin_path'] = video_file_path
+                            params.video_origin_path = video_file_path
+                        else:
+                            st.error("从 Alist 下载文件失败")
+                else:
+                    st.warning("请先配置 Alist 连接信息")
 
 
 def render_short_generate_options(tr):
@@ -329,14 +522,14 @@ def short_drama_summary(tr):
         st.session_state['subtitle_file_processed'] = False
 
     render_fun_asr_transcription(tr)
-    
+
     subtitle_file = st.file_uploader(
         tr("上传字幕文件"),
         type=["srt"],
         accept_multiple_files=False,
         key="subtitle_file_uploader"  # 添加唯一key
     )
-    
+
     # 显示当前已上传的字幕文件路径
     if 'subtitle_path' in st.session_state and st.session_state['subtitle_path']:
         st.info(f"已上传字幕: {os.path.basename(st.session_state['subtitle_path'])}")
@@ -345,7 +538,7 @@ def short_drama_summary(tr):
             st.session_state['subtitle_content'] = None
             st.session_state['subtitle_file_processed'] = False
             st.rerun()
-    
+
     # 只有当有文件上传且尚未处理时才执行处理逻辑
     if subtitle_file is not None and not st.session_state['subtitle_file_processed']:
         try:
@@ -492,50 +685,617 @@ def render_fun_asr_transcription(tr):
                 st.error(f"Fun-ASR 字幕转写失败: {str(e)}")
 
 
+def render_gaming_details(tr):
+    """游戏解说 渲染视频主题和自定义提示词"""
+    st.info("""
+    **游戏解说模式**：使用自定义 Prompt 生成游戏解说脚本
+
+    **视觉对齐公式**：`[主体]+[场景]+[动作]+[镜头语言]+[氛围/风格]`
+
+    示例：`[玩家一]+[剧毒沼泽]+[利用完美格挡弹反BOSS重击]+[镜头锁定特写]+[硬核/紧张/极具压迫感]`
+    """)
+
+    # 游戏主题
+    video_theme = st.text_input(
+        tr("游戏名称/主题"),
+        value=st.session_state.get('gaming_video_theme', ''),
+        placeholder="例如：双影奇境 硬核攻略"
+    )
+    st.session_state['gaming_video_theme'] = video_theme
+
+    # 预设风格选择
+    style_options = {
+        "hardcore": "硬核攻略（专业、冷静、干练）",
+        "funny": "沙雕吐槽（幽默、接地气、节目效果）",
+        "custom": "自定义 Prompt"
+    }
+    selected_style = st.selectbox(
+        tr("解说风格"),
+        options=list(style_options.keys()),
+        format_func=lambda x: style_options[x],
+        help="选择预设风格或使用自定义 Prompt"
+    )
+
+    # 根据风格显示不同的 Prompt
+    if selected_style == "hardcore":
+        default_prompt = """# 任务：分析《双影奇境》的高端操作片段，并生成硬核技术流解说脚本。
+
+# 视觉对齐公式：
+请严格遵循 [主体]+[场景]+[动作]+[镜头语言]+[氛围/风格] 的逻辑来理解画面并撰写解说。
+
+# 解说词要求：
+1. 语言风格：专业、冷静、干练，多用游戏术语（如：完美格挡、无敌帧、卡身位）
+2. 时间轴容错：每段解说词后必须预留 1-2 秒的视觉展示时间
+
+# 输出格式：
+{
+  "clip_style": "hardcore",
+  "visual_anchor": "画面描述",
+  "narration": "硬核解说词"
+}"""
+    elif selected_style == "funny":
+        default_prompt = """# 任务：分析《双影奇境》双人联机片段，生成搞笑、吐槽风格的解说脚本。
+
+# 视觉对齐公式：
+请严格遵循 [主体]+[场景]+[动作]+[镜头语言]+[氛围/风格] 的逻辑来理解画面并撰写解说。
+
+# 解说词要求：
+1. 语言风格：接地气、幽默、充满戏剧性，多描述双人联机时的"互坑"细节
+2. 时间轴容错：在"死亡"或"失误"的精彩瞬间留白 2 秒
+
+# 输出格式：
+{
+  "clip_style": "funny",
+  "visual_anchor": "画面描述",
+  "narration": "沙雕解说词"
+}"""
+    else:
+        default_prompt = st.session_state.get('gaming_custom_prompt', '')
+
+    # 自定义 Prompt 输入
+    custom_prompt = st.text_area(
+        tr("自定义 Prompt"),
+        value=st.session_state.get('gaming_custom_prompt', default_prompt),
+        help="输入自定义的解说 Prompt，支持视觉对齐公式",
+        height=250
+    )
+    st.session_state['gaming_custom_prompt'] = custom_prompt
+
+    # 视频参数设置
+    input_cols = st.columns(2)
+    with input_cols[0]:
+        st.number_input(
+            tr("帧间隔（秒）"),
+            min_value=1,
+            value=st.session_state.get('gaming_frame_interval', 3),
+            help="关键帧提取间隔",
+            key="gaming_frame_interval"
+        )
+
+    with input_cols[1]:
+        st.number_input(
+            tr("批次大小"),
+            min_value=1,
+            value=st.session_state.get('gaming_batch_size', 10),
+            help="每批处理的帧数",
+            key="gaming_batch_size"
+        )
+
+    return video_theme, custom_prompt
+
+
 def render_script_buttons(tr, params):
     """渲染脚本操作按钮"""
     # 获取当前选择的脚本类型
     script_path = st.session_state.get('video_clip_json_path', '')
 
-    # 生成/加载按钮
-    if script_path == "auto":
-        button_name = tr("Generate Video Script")
-    elif script_path == "short":
-        button_name = tr("Generate Short Video Script")
-    elif script_path == "summary":
-        button_name = tr("生成短剧解说脚本")
-    elif script_path.endswith("json"):
-        button_name = tr("Load Video Script")
-    else:
-        button_name = tr("Please Select Script File")
-
-    if st.button(button_name, key="script_action", disabled=not script_path):
+    # 仅在生成模式下渲染“生成脚本”按钮，选择已有的 JSON 脚本时无需“加载”按钮（已由选择框自动即时加载路径）
+    if script_path in ["auto", "short", "summary", "gaming"]:
         if script_path == "auto":
-            # 执行纪录片视频脚本生成（视频无字幕无配音）
-            generate_script_docu(params)
+            button_name = tr("Generate Video Script")
         elif script_path == "short":
-            # 执行 短剧混剪 脚本生成
-            custom_clips = st.session_state.get('custom_clips')
-            generate_script_short(tr, params, custom_clips)
+            button_name = tr("Generate Short Video Script")
         elif script_path == "summary":
-            # 执行 短剧解说 脚本生成
-            subtitle_path = st.session_state.get('subtitle_path')
-            video_theme = st.session_state.get('video_theme')
-            temperature = st.session_state.get('temperature')
-            generate_script_short_sunmmary(params, subtitle_path, video_theme, temperature)
-        else:
-            load_script(tr, script_path)
+            button_name = tr("生成短剧解说脚本")
+        elif script_path == "gaming":
+            button_name = tr("🎮 生成游戏解说脚本")
 
-    # 视频脚本编辑区
-    video_clip_json_details = st.text_area(
-        tr("Video Script"),
-        value=json.dumps(st.session_state.get('video_clip_json', []), indent=2, ensure_ascii=False),
-        height=500
-    )
+        if st.button(button_name, key="script_action", use_container_width=True, type="primary"):
+            if script_path == "auto":
+                # 执行纪录片视频脚本生成（视频无字幕无配音）
+                generate_script_docu(params)
+            elif script_path == "short":
+                # 执行 短剧混剪 脚本生成
+                custom_clips = st.session_state.get('custom_clips')
+                generate_script_short(tr, params, custom_clips)
+            elif script_path == "summary":
+                # 执行 短剧解说 脚本生成
+                subtitle_path = st.session_state.get('subtitle_path')
+                video_theme = st.session_state.get('video_theme')
+                temperature = st.session_state.get('temperature')
+                generate_script_short_sunmmary(params, subtitle_path, video_theme, temperature)
+            elif script_path == "gaming":
+                # 执行游戏解说脚本生成
+                generate_script_gaming(params)
 
-    # 操作按钮行 - 合并格式检查和保存功能
-    if st.button(tr("Save Script"), key="save_script", use_container_width=True):
-        save_script_with_validation(tr, video_clip_json_details)
+    # =============================================
+    # 断点续传 + 关键帧预览（仅游戏解说模式）
+    # =============================================
+    if script_path == "gaming" and params.video_origin_path:
+        st.divider()
+        with st.expander("🔄 本地断点调试 & 关键帧预览 (开发者选项)", expanded=False):
+            st.markdown("### 🔄 断点续传 & 关键帧预览")
+
+            service = DocumentaryFrameAnalysisService()
+            frame_interval = st.session_state.get('gaming_frame_interval', 3)
+            batch_size = st.session_state.get('gaming_batch_size', 10)
+
+            checkpoint_status = service.get_checkpoint_status(
+                video_path=params.video_origin_path,
+                frame_interval=float(frame_interval),
+                batch_size=batch_size,
+            )
+
+            col_preview, col_checkpoint = st.columns(2)
+
+            with col_preview:
+                st.markdown("**🖼️ 关键帧预览**")
+                if st.button("🔍 查看已提取的关键帧", key="preview_keyframes"):
+                    with st.spinner("正在加载关键帧..."):
+                        try:
+                            keyframe_files = service._load_or_extract_keyframes(
+                                params.video_origin_path, float(frame_interval)
+                            )
+                            if keyframe_files:
+                                cols = st.columns(4)
+                                for i, kf in enumerate(keyframe_files[:16]):
+                                    with cols[i % 4]:
+                                        st.image(kf, caption=os.path.basename(kf)[:30], width=120)
+                                if len(keyframe_files) > 16:
+                                    st.caption(f"共 {len(keyframe_files)} 帧，以上显示前 16 张")
+                            else:
+                                st.info("尚未提取关键帧，请先点击「生成游戏解说脚本」")
+                        except Exception as e:
+                            st.error(f"预览失败: {str(e)}")
+
+            with col_checkpoint:
+                st.markdown("**💾 断点状态**")
+                if checkpoint_status["exists"]:
+                    completed = checkpoint_status["completed_batches"]
+                    total = checkpoint_status["total_batches"]
+                    pct = completed / total * 100 if total > 0 else 0
+                    st.success(f"✅ 已分析 {completed}/{total} 个批次（{pct:.0f}%）")
+                    st.caption(f"批次索引: {checkpoint_status['completed_indices']}")
+                    col_clear, col_resume = st.columns(2)
+                    with col_clear:
+                        if st.button("🗑️ 清除断点", key="clear_checkpoint"):
+                            service.clear_checkpoint(
+                                params.video_origin_path, float(frame_interval), batch_size
+                            )
+                            st.rerun()
+                    with col_resume:
+                        st.info("点击「🎮 生成游戏解说脚本」将从断点继续")
+                else:
+                    st.info("暂无断点记录，从头开始分析")
+
+        st.divider()
+
+    # =============================================
+    # Kaggle 离线处理（仅游戏解说模式）
+    # =============================================
+    if script_path == "gaming":
+        st.markdown("### 📦 Kaggle GPU 视频识别")
+        st.caption("使用免费 GPU 资源（T4 x2/P100）一键离线运行 Qwen2-VL 模型进行超快视频与画面事件识别")
+
+        # Alist 配置检测
+        from app.utils.alist_client import get_alist_client
+        alist_client = get_alist_client()
+        alist_configured = alist_client is not None
+
+        # 1. 高级参数与配置
+        with st.expander("⚙️ Kaggle & Alist 账号与高级参数配置 (首次使用或需修改时展开)", expanded=False):
+            if not alist_configured:
+                st.warning("⚠️ Alist 未配置，文件传输将使用本地手动方式。配置 [alist] 可开启自动上传/下载")
+                alist_enabled = False
+            else:
+                alist_enabled = st.checkbox(
+                    "☁️ 使用 Alist 自动传输",
+                    value=st.session_state.get("kaggle_alist_enabled", True),
+                    help="开启后：导出自动上传 Alist，导入自动从 Alist 下载，Kaggle 端无需手动上传/下载文件",
+                    key="kaggle_alist_enabled"
+                )
+
+            st.markdown("---")
+            st.markdown("**Kaggle Dataset 设置**")
+            dataset_cols = st.columns(2)
+            with dataset_cols[0]:
+                kaggle_username = st.text_input(
+                    "Kaggle Username",
+                    value=os.getenv("KAGGLE_USERNAME", config.app.get("kaggle_username", "")),
+                    key="kaggle_username_input",
+                    help="用于写入 dataset-metadata.json。Token 不会写入文件。",
+                )
+            with dataset_cols[1]:
+                dataset_slug = st.text_input(
+                    "Dataset Slug",
+                    value=config.app.get("kaggle_dataset_slug", "narratoai-video-understanding-tasks"),
+                    key="kaggle_dataset_slug_input",
+                    help="建议固定一个 Dataset，后续用 version 更新不同剪辑任务。",
+                )
+
+            upload_cols = st.columns(2)
+            with upload_cols[0]:
+                upload_to_kaggle = st.checkbox(
+                    "生成后直接上传/更新 Kaggle Dataset",
+                    value=True,
+                    key="kaggle_upload_enabled",
+                )
+            with upload_cols[1]:
+                create_dataset = st.checkbox(
+                    "第一次创建 Dataset",
+                    value=False,
+                    key="kaggle_create_dataset",
+                    help="第一次勾选；之后取消勾选，使用 kaggle datasets version 更新版本。",
+                )
+
+            st.markdown("---")
+            st.markdown("**🚀 Kaggle 运行高级参数**")
+            kaggle_run_cols = st.columns([1, 1, 1])
+            with kaggle_run_cols[0]:
+                poll_interval = st.number_input(
+                    "轮询间隔（秒）",
+                    min_value=10,
+                    max_value=300,
+                    value=60,
+                    key="kaggle_poll_interval",
+                    help="每隔多少秒查询一次 Kernel 状态",
+                )
+            with kaggle_run_cols[1]:
+                timeout_minutes = st.number_input(
+                    "超时（分钟）",
+                    min_value=5,
+                    max_value=240,
+                    value=120,
+                    key="kaggle_timeout_minutes",
+                    help="超过此时间未完成则报错",
+                )
+            with kaggle_run_cols[2]:
+                swanlab_mode = st.selectbox(
+                    "SwanLab 模式",
+                    options=["off", "local", "online"],
+                    index=1,
+                    key="kaggle_swanlab_mode",
+                    help="online 需要 SWANLAB_API_KEY 环境变量",
+                )
+
+        # Get alist_enabled value
+        alist_enabled = st.session_state.get("kaggle_alist_enabled", alist_configured)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("#### 📤 1. 生成与提交任务")
+
+            # Show active task card
+            existing_task_dir = st.session_state.get("kaggle_task_dir")
+            existing_task_name = st.session_state.get("kaggle_task_name")
+            existing_zip_path = st.session_state.get("kaggle_zip_path")
+            existing_kernel_slug = st.session_state.get("kaggle_kernel_slug")
+            existing_dataset_ref = st.session_state.get("kaggle_dataset_ref")
+
+            if existing_task_name and existing_task_dir:
+                st.markdown(f"""
+                <div style="background-color: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; border-left: 4px solid #4A90E2; margin-bottom: 12px;">
+                    <p style="margin: 0; font-weight: bold; color: #4A90E2; font-size: 14px;">📋 当前活动任务</p>
+                    <p style="margin: 4px 0 0 0; font-size: 12px; opacity: 0.9;">任务名称: <code>{existing_task_name}</code></p>
+                    <p style="margin: 2px 0 0 0; font-size: 12px; opacity: 0.7;">本地路径: <code>{existing_task_dir}</code></p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                if existing_zip_path and os.path.exists(existing_zip_path):
+                    with open(existing_zip_path, "rb") as f:
+                        zip_data = f.read()
+                    st.download_button(
+                        "⬇️ 下载离线任务包 (用于手动上传)",
+                        data=zip_data,
+                        file_name=os.path.basename(existing_zip_path),
+                        mime="application/zip",
+                        key="kaggle_zip_download",
+                        use_container_width=True
+                    )
+
+            if st.button("📦 一键生成并提交新任务", key="kaggle_export", use_container_width=True, type="primary"):
+                if not params.video_origin_path:
+                    st.error("请先选择视频文件")
+                else:
+                    with st.spinner("正在生成 Kaggle Dataset 任务目录..."):
+                        dataset_service = KaggleVideoUnderstandingService()
+                        gaming_custom_prompt = st.session_state.get('gaming_custom_prompt', '')
+                        gaming_video_theme = st.session_state.get('gaming_video_theme', '游戏精彩片段')
+                        frame_interval = st.session_state.get('gaming_frame_interval', 3)
+                        batch_size = st.session_state.get('gaming_batch_size', 8)
+                        subtitle_path = st.session_state.get('subtitle_path', '')
+                        try:
+                            export_result = dataset_service.build_dataset_task(
+                                video_path=params.video_origin_path,
+                                subtitle_path=subtitle_path or None,
+                                kaggle_username=kaggle_username,
+                                dataset_slug=dataset_slug,
+                                video_theme=gaming_video_theme,
+                                custom_prompt=gaming_custom_prompt,
+                                frame_interval_seconds=float(frame_interval),
+                                refine_interval_seconds=0.75,
+                                batch_size=batch_size,
+                            )
+                            zip_path = export_result["archive_path"]
+                            task_dir = export_result["task_dir"]
+                            task_name = export_result["task_name"]
+                            dataset_ref = export_result["dataset_ref"]
+
+                            st.session_state["kaggle_zip_path"] = zip_path
+                            st.session_state["kaggle_task_name"] = task_name
+                            st.session_state["kaggle_task_dir"] = task_dir
+                            st.session_state["kaggle_kernel_slug"] = export_result.get("kernel_slug", "")
+                            st.session_state["kaggle_dataset_ref"] = dataset_ref
+
+                            video_file_size = os.path.getsize(params.video_origin_path) if os.path.exists(params.video_origin_path) else 0
+                            video_size_mb = video_file_size / (1024 * 1024)
+
+                            st.success(f"✅ Dataset 任务 `{task_name}` 生成成功！视频大小 {video_size_mb:.1f} MB")
+
+                            if upload_to_kaggle:
+                                with st.spinner("正在调用 Kaggle CLI 上传/更新 Dataset..."):
+                                    upload_result = dataset_service.upload_dataset(
+                                        task_dir=task_dir,
+                                        create=create_dataset,
+                                        message=f"NarratoAI video task {task_name}",
+                                    )
+                                st.success("✅ Kaggle Dataset 上传成功")
+                            st.rerun()
+
+                        except Exception as e:
+                            st.error(f"导出失败: {str(e)}")
+                            logger.exception(f"Kaggle 导出失败\n{traceback.format_exc()}")
+
+            # Online Run Block
+            if existing_task_dir:
+                st.markdown("---")
+                st.markdown("##### 🚀 启动 GPU 运行并生成脚本")
+                st.caption("自动推送 Notebook → 启动 GPU Kernel → 轮询状态 → 自动转换并重新加载")
+
+                if st.button("🚀 一键在 Kaggle 运行视频理解", key="kaggle_run_online", use_container_width=True):
+                    with st.spinner("🚀 正在推送 Notebook 到 Kaggle..."):
+                        try:
+                            dataset_service = KaggleVideoUnderstandingService()
+                            run_result = dataset_service.run_on_kaggle(
+                                task_dir=existing_task_dir,
+                                kernel_slug=existing_kernel_slug or "",
+                                dataset_ref=existing_dataset_ref or f"{kaggle_username}/{dataset_slug}",
+                                poll_interval_seconds=int(poll_interval),
+                                timeout_seconds=int(timeout_minutes * 60),
+                                swanlab_mode=swanlab_mode if swanlab_mode != "off" else "off",
+                            )
+
+                            st.success("✅ Kaggle GPU 运行完成！")
+                            result_cols = st.columns(2)
+                            with result_cols[0]:
+                                if "event_count" in run_result:
+                                    st.metric("事件数", run_result["event_count"])
+                            with result_cols[1]:
+                                if "clip_count" in run_result:
+                                    st.metric("候选片段", run_result["clip_count"])
+
+                            st.session_state["kaggle_run_output_base"] = run_result.get("output_base", "")
+                            st.session_state["kaggle_run_files"] = run_result.get("files", {})
+
+                            if "candidate_clips" in run_result.get("files", {}):
+                                st.info("⏭️ 自动进入生成剪辑脚本流程...")
+                                clips_path = run_result["files"]["candidate_clips"]
+                                auto_task_id = f"kaggle_auto_{int(time.time())}"
+                                auto_task_dir = utils.task_dir(auto_task_id)
+                                os.makedirs(auto_task_dir, exist_ok=True)
+                                auto_script_path = os.path.join(auto_task_dir, "script.json")
+                                script_result = dataset_service.candidate_clips_to_script(
+                                    candidate_clips_path=clips_path,
+                                    output_script_path=auto_script_path,
+                                )
+                                st.session_state["video_clip_json"] = script_result["video_clip_json"]
+                                st.session_state["video_clip_json_path"] = auto_script_path
+                                st.success(f"✅ 剪辑脚本已生成：{script_result['selected_count']} 个片段")
+                                st.rerun()
+                        except Exception as run_e:
+                            st.error(f"❌ Kaggle 运行失败: {str(run_e)}")
+                            logger.exception(f"Kaggle run_on_kaggle 失败\n{traceback.format_exc()}")
+
+        with col2:
+            st.markdown("#### 📥 2. 导入结果生成剪辑脚本")
+
+            if alist_enabled and alist_configured:
+                st.markdown("**☁️ 从 Alist 导入结果**")
+                default_task_name = st.session_state.get("kaggle_task_name", "")
+                alist_task_name_input = st.text_input(
+                    "Task Name",
+                    value=st.session_state.get("kaggle_alist_task_name", default_task_name),
+                    placeholder="例如: kaggle_20250514_203400",
+                    key="kaggle_alist_task_name_input",
+                    help="填写导出时的 Task Name，脚本会从 Alist 下载对应结果"
+                )
+                st.session_state["kaggle_alist_task_name"] = alist_task_name_input
+                if st.button("☁️ 从 Alist 下载 analysis_result.json 并继续", key="kaggle_from_alist", use_container_width=True):
+                    if not alist_task_name_input:
+                        st.error("请先填写 Task Name")
+                    else:
+                        with st.spinner("从 Alist 下载 analysis_result.json..."):
+                            try:
+                                service = DocumentaryFrameAnalysisService()
+                                batch_results = service.import_kaggle_results(
+                                    results_json_path=None,
+                                    video_path=params.video_origin_path,
+                                    frame_interval_input=st.session_state.get('gaming_frame_interval', 3),
+                                    batch_size=st.session_state.get('gaming_batch_size', 10),
+                                    download_from_alist=True,
+                                    alist_task_name=alist_task_name_input,
+                                )
+                                video_clip_json = service._build_video_clip_json(batch_results)
+                                st.session_state["video_clip_json"] = video_clip_json
+                                task_id = f"gaming_alist_{int(time.time())}"
+                                task_dir = utils.task_dir(task_id)
+                                os.makedirs(task_dir, exist_ok=True)
+                                script_path = os.path.join(task_dir, "script.json")
+                                with open(script_path, "w", encoding="utf-8") as f:
+                                    json.dump(video_clip_json, f, ensure_ascii=False, indent=2)
+                                st.session_state["video_clip_json_path"] = script_path
+                                st.success(f"✅ Kaggle 结果已导入，共 {len(video_clip_json)} 个片段")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"导入失败: {str(e)}")
+                                logger.exception(f"Kaggle Alist 导入失败\n{traceback.format_exc()}")
+            else:
+                st.markdown("**📥 上传本地结果文件**")
+                uploaded_results = st.file_uploader(
+                    "选择 candidate_clips.json / analysis_result.json",
+                    type=["json"],
+                    key="kaggle_results_upload",
+                    help="推荐上传 candidate_clips.json；兼容旧版 analysis_result.json"
+                )
+                if uploaded_results:
+                    results_path = os.path.join(utils.temp_dir(), uploaded_results.name)
+                    with open(results_path, "wb") as f:
+                        f.write(uploaded_results.getvalue())
+                    st.session_state["kaggle_results_path"] = results_path
+                    st.success("✅ 结果文件已加载，可以生成剪辑脚本")
+
+                default_candidate_path = os.path.join(
+                    config.root_dir,
+                    "results (1)",
+                    "results",
+                    "candidate_clips.json",
+                )
+                local_results_path = st.text_input(
+                    "或输入本地 candidate_clips.json 路径",
+                    value=st.session_state.get(
+                        "kaggle_local_results_path",
+                        default_candidate_path if os.path.exists(default_candidate_path) else "",
+                    ),
+                    key="kaggle_local_results_path_input",
+                    help="适合直接使用 Kaggle 下载解压后的 results/candidate_clips.json",
+                )
+                st.session_state["kaggle_local_results_path"] = local_results_path.strip()
+                if local_results_path.strip() and os.path.exists(local_results_path.strip()):
+                    st.session_state["kaggle_results_path"] = local_results_path.strip()
+                    st.caption(f"当前结果文件: {local_results_path.strip()}")
+
+                with st.expander("🎬 Benchmark 精选剪辑参数", expanded=True):
+                    st.caption("把密集候选片段去重、避开重叠，并压缩成适合直接剪辑的短视频脚本。")
+                    compact_enabled = st.checkbox(
+                        "启用精选去重",
+                        value=True,
+                        key="kaggle_compact_highlights",
+                    )
+                    compact_cols = st.columns(4)
+                    with compact_cols[0]:
+                        compact_min_score = st.slider(
+                            "最低分",
+                            min_value=7.0,
+                            max_value=10.0,
+                            value=8.0,
+                            step=0.1,
+                            key="kaggle_compact_min_score",
+                        )
+                    with compact_cols[1]:
+                        compact_target_duration = st.number_input(
+                            "目标时长(秒)",
+                            min_value=30,
+                            max_value=600,
+                            value=90,
+                            step=10,
+                            key="kaggle_compact_target_duration",
+                        )
+                    with compact_cols[2]:
+                        compact_max_clips = st.number_input(
+                            "最多片段",
+                            min_value=1,
+                            max_value=80,
+                            value=18,
+                            step=1,
+                            key="kaggle_compact_max_clips",
+                        )
+                    with compact_cols[3]:
+                        compact_max_overlap = st.number_input(
+                            "允许重叠(秒)",
+                            min_value=0.0,
+                            max_value=8.0,
+                            value=2.0,
+                            step=0.5,
+                            key="kaggle_compact_max_overlap",
+                        )
+                    require_narration = st.checkbox(
+                        "过滤无解说文案片段",
+                        value=True,
+                        key="kaggle_compact_require_narration",
+                    )
+
+                if st.button("🎮 从 Kaggle 结果生成剪辑脚本", key="kaggle_continue", use_container_width=True):
+                    results_path = st.session_state.get("kaggle_results_path")
+                    if not results_path:
+                        st.error("请先上传 candidate_clips.json 或 analysis_result.json 文件")
+                    elif not os.path.exists(results_path):
+                        st.error(f"结果文件不存在: {results_path}")
+                    else:
+                        with st.spinner("正在从 Kaggle 结果生成剪辑脚本..."):
+                            try:
+                                task_id = f"gaming_kaggle_{int(time.time())}"
+                                task_dir = utils.task_dir(task_id)
+                                os.makedirs(task_dir, exist_ok=True)
+                                script_path = os.path.join(task_dir, "script.json")
+
+                                with open(results_path, "r", encoding="utf-8") as f:
+                                    result_payload = json.load(f)
+
+                                if isinstance(result_payload, dict) and "clips" in result_payload:
+                                    dataset_service = KaggleVideoUnderstandingService()
+                                    script_result = dataset_service.candidate_clips_to_script(
+                                        candidate_clips_path=results_path,
+                                        output_script_path=script_path,
+                                        min_score=float(compact_min_score),
+                                        compact_highlights=bool(compact_enabled),
+                                        target_duration_seconds=float(compact_target_duration),
+                                        max_clips=int(compact_max_clips),
+                                        max_overlap_seconds=float(compact_max_overlap),
+                                        require_narration=bool(require_narration),
+                                        narration_ost=2 if compact_enabled else None,
+                                        stable_narration=bool(compact_enabled),
+                                    )
+                                    video_clip_json = script_result["video_clip_json"]
+                                else:
+                                    service = DocumentaryFrameAnalysisService()
+                                    frame_interval = st.session_state.get('gaming_frame_interval', 3)
+                                    batch_size = st.session_state.get('gaming_batch_size', 10)
+                                    batch_results = service.import_kaggle_results(
+                                        results_json_path=results_path,
+                                        video_path=params.video_origin_path,
+                                        frame_interval_input=frame_interval,
+                                        batch_size=batch_size,
+                                    )
+                                    video_clip_json = service._build_video_clip_json(batch_results)
+                                    with open(script_path, "w", encoding="utf-8") as f:
+                                        json.dump(video_clip_json, f, ensure_ascii=False, indent=2)
+
+                                st.session_state["video_clip_json"] = video_clip_json
+                                st.session_state["video_clip_json_path"] = script_path
+
+                                if isinstance(result_payload, dict) and "clips" in result_payload:
+                                    st.success(
+                                        "✅ Kaggle 结果已导入并精选，"
+                                        f"{script_result.get('raw_selected_count', len(video_clip_json))} -> "
+                                        f"{len(video_clip_json)} 个片段"
+                                    )
+                                else:
+                                    st.success(f"✅ Kaggle 结果已导入，共 {len(video_clip_json)} 个片段")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"继续生成失败: {str(e)}")
+                                logger.exception(f"Kaggle 继续生成失败\n{traceback.format_exc()}")
+
 
 
 def load_script(tr, script_path):
@@ -609,7 +1369,7 @@ def save_script_with_validation(tr, video_clip_json_details):
                 json.dump(data, file, ensure_ascii=False, indent=4)
                 st.session_state['video_clip_json'] = data
                 st.session_state['video_clip_json_path'] = save_path
-                
+
                 # 标记需要切换到文件选择模式（在下次渲染前处理）
                 st.session_state['_switch_to_file_mode'] = True
 

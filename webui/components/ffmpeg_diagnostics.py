@@ -59,7 +59,7 @@ def show_ffmpeg_diagnostics():
                 st.write(f"- 加速类型: {hwaccel_info.get('type', '未知')}")
                 st.write(f"- 编码器: {hwaccel_info.get('encoder', '未知')}")
                 st.write(f"- GPU 厂商: {hwaccel_info.get('gpu_vendor', '未知')}")
-                st.write(f"- 独立显卡: {'是' if hwaccel_info.get('is_dedicated_gpu', False) else '否'}")
+                st.write(f"- GPU 类型: {hwaccel_info.get('gpu_kind') or ('独立 GPU' if hwaccel_info.get('is_dedicated_gpu', False) else '集成/内建 GPU')}")
                 
                 if hwaccel_info.get("tested_methods"):
                     st.write(f"- 测试的方法: {', '.join(hwaccel_info['tested_methods'])}")
